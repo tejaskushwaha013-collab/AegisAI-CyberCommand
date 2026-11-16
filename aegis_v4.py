@@ -1,26 +1,31 @@
-import base64
-import difflib
-import hashlib
-import ipaddress
 import os
+import io
 import re
+import math
+import json
+import time
+import base64
+import socket
+import hashlib
+import zipfile
 import tempfile
-from urllib.parse import parse_qs, urlparse
+import ipaddress
+from datetime import datetime
+from urllib.parse import urlparse, parse_qs, unquote, quote
+from concurrent.futures import ThreadPoolExecutor
 
-import cv2
-import librosa
 import numpy as np
-import psutil
+import cv2
 import requests
+import psutil
 import streamlit as st
-from PIL import Image
-from transformers import pipeline
+from PIL import Image, ExifTags
 
-# ---------------------------------------------------------
-# 1. PAGE CONFIGURATION & CYBER-COMMAND THEME
-# ---------------------------------------------------------
+# ==============================================================================
+# PAGE CONFIGURATION & GOVERNMENT-GRADE PORTAL STYLING
+# ==============================================================================
 st.set_page_config(
-    page_title="AegisAI CyberCommand v4.0",
+    page_title="AegisAI CyberCommand — Citizen Cyber Defense & AI Forensics",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -29,1307 +34,1561 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    .stApp {
-        background: linear-gradient(135deg, #090d16 0%, #111827 55%, #0f172a 100%);
+    .main-banner {
+        background: linear-gradient(135deg, #0b132b 0%, #1c2541 60%, #0f3460 100%);
+        border: 1px solid #2b4c7e;
+        border-left: 6px solid #ff9933;
+        padding: 18px 22px;
+        border-radius: 10px;
+        margin-bottom: 14px;
         color: #f8fafc;
     }
-    .hero-box {
-        background: linear-gradient(90deg, rgba(6,182,212,0.18) 0%, rgba(79,70,229,0.20) 100%);
-        border: 1px solid rgba(34, 211, 238, 0.4);
-        border-radius: 14px;
-        padding: 18px 24px;
-        margin-bottom: 18px;
+    .helpline-strip {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-left: 5px solid #138808;
+        padding: 10px 16px;
+        border-radius: 8px;
+        font-size: 0.93rem;
+        margin-bottom: 16px;
     }
-    .hero-title {
-        font-size: 1.9rem;
-        font-weight: 800;
-        color: #22d3ee;
-        margin: 0;
+    .verdict-danger {
+        background: rgba(220, 38, 38, 0.16);
+        border: 1px solid #ef4444;
+        border-left: 6px solid #dc2626;
+        padding: 14px 18px;
+        border-radius: 8px;
+        margin: 10px 0;
     }
-    .hero-desc {
-        color: #cbd5e1;
-        font-size: 0.95rem;
-        margin-top: 4px;
+    .verdict-warn {
+        background: rgba(245, 158, 11, 0.16);
+        border: 1px solid #f59e0b;
+        border-left: 6px solid #d97706;
+        padding: 14px 18px;
+        border-radius: 8px;
+        margin: 10px 0;
     }
-    .badge {
-        display: inline-block;
-        padding: 4px 12px;
-        border-radius: 999px;
-        font-size: 0.78rem;
-        font-weight: 600;
-        background: rgba(16, 185, 129, 0.16);
-        color: #34d399;
-        border: 1px solid rgba(16, 185, 129, 0.45);
-        margin-right: 8px;
-        margin-top: 8px;
-    }
-    div[data-testid="stMetric"] {
-        background-color: rgba(30, 41, 59, 0.78);
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        padding: 12px 16px;
-        border-radius: 10px;
+    .verdict-safe {
+        background: rgba(16, 185, 129, 0.15);
+        border: 1px solid #10b981;
+        border-left: 6px solid #059669;
+        padding: 14px 18px;
+        border-radius: 8px;
+        margin: 10px 0;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# Initialize session state for AI Assistant & scan memory
-if "last_scan_summary" not in st.session_state:
-    st.session_state["last_scan_summary"] = "No scans performed yet in this session."
-if "chat_history" not in st.session_state:
-    st.session_state["chat_history"] = [
-        {
-            "role": "assistant",
-            "content": (
-                "Welcome to **AegisAI CyberCommand v4.0**! I am your built-in **AI Security Assistant**. "
-                "You can scan any QR code, SMS, website link, image, video, voice recording, or file—and ask me "
-                "anything about your scan results or how to stay safe from cyber fraud."
-            ),
-        }
-    ]
-
-# ---------------------------------------------------------
-# 2. SIDEBAR: LIVE STATUS, HELP GUIDE & OPTIONAL API KEYS
-# ---------------------------------------------------------
-with st.sidebar:
-    st.markdown("## 🛡️ AegisAI v4.0 Control")
-    st.success("🟢 All AI Security Engines: Ready")
-    st.info("🌐 Free Live Internet Intel: Active")
-
-    with st.expander("❓ Quick Help & Tool Guide", expanded=True):
-        st.markdown(
-            """
-            **All-Rounder Security Modules:**
-            1. **📷 QR & UPI Scanner:** Upload QR screenshots, use live webcam, or test QR links & UPI payment traps.
-            2. **💬 SMS & Phishing:** Detect fake bank KYC, OTP, delivery & callback scams.
-            3. **🌐 Website & Link Check:** Verify any suspicious URL before opening it.
-            4. **🎭 Deepfake Media:** Detect AI face-swaps in photos & videos.
-            5. **🎙️ Voice Clone AI:** Check audio clips for cloned AI voices.
-            6. **🦠 Malware & APK Scan:** Inspect `.apk`, `.exe`, `.pdf`, or `.zip` files.
-            7. **📡 Live Network Guard:** Audit running apps & remote server IPs.
-            8. **🤖 AI Support & Guide:** 24/7 chat support + cyber helpline guide.
-            """
-        )
-
-    with st.expander("🔑 Optional Pro API Keys (100% Optional)", expanded=False):
-        st.caption("Leave blank to use built-in free AI + free live DNS/IP intelligence.")
-        vt_api_key = st.text_input(
-            "VirusTotal API Key (v3)",
-            value="",
-            type="password",
-            help="Optional free key from virustotal.com to cross-check hashes/URLs across 70+ antivirus engines.",
-        )
-        abuseipdb_api_key = st.text_input(
-            "AbuseIPDB API Key (v2)",
-            value="",
-            type="password",
-            help="Optional free key from abuseipdb.com for community IP abuse scores.",
-        )
-
-st.markdown(
-    """
-    <div class="hero-box">
-        <div class="hero-title">🛡️ AegisAI CyberCommand v4.0 — All-in-One AI Cyber Defense Suite</div>
-        <div class="hero-desc">
-            6-Pass QR & UPI Forensics • BERT Phishing AI • Live Internet DNS & Redirect Tracer • Deepfake & Voice AI • Built-in AI Assistant
-        </div>
-        <div>
-            <span class="badge">● 6-Pass QR + Webcam Ready</span>
-            <span class="badge">● BERT Phishing AI Ready</span>
-            <span class="badge">● Live DNS & IP Intel Active</span>
-            <span class="badge">● 24/7 AI Support Online</span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ---------------------------------------------------------
-# 3. CACHED DEEP LEARNING MODELS (WITH SAFE FALLBACKS)
-# ---------------------------------------------------------
-@st.cache_resource(show_spinner="Loading BERT Phishing Neural Network...")
-def load_sms_phishing_model():
+# ==============================================================================
+# CACHED AI MODEL LOADERS (LAZY-LOADED TO PREVENT CLOUD MEMORY EXHAUSTION)
+# ==============================================================================
+@st.cache_resource(show_spinner="Loading Multi-Model Deepfake Image & Video Forensics...")
+def load_deepfake_pipeline():
+    loaded = []
     try:
+        from transformers import pipeline
+        for model_name in [
+            "Ateeqq/ai-vs-human-image-detector",
+            "dima806/deepfake_vs_real_image_detection",
+        ]:
+            try:
+                loaded.append((model_name, pipeline("image-classification", model=model_name)))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return loaded
+
+
+@st.cache_resource(show_spinner="Loading BERT Phishing & Scam Classifier...")
+def load_phishing_pipeline():
+    try:
+        from transformers import pipeline
         return pipeline("text-classification", model="ealvaradob/bert-finetuned-phishing")
     except Exception:
         return None
 
 
-@st.cache_resource(show_spinner="Loading Vision Transformer Deepfake Model...")
-def load_image_deepfake_model():
+@st.cache_resource(show_spinner="Loading Wav2Vec2 AI Voice Clone Forensics...")
+def load_audio_models():
+    """Loads verified Wav2Vec2 deepfake voice detectors with explicit id2label mapping."""
+    loaded = []
     try:
-        return pipeline("image-classification", model="dima806/deepfake_vs_real_image_detection")
+        import torch
+        from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
+
+        model_ids = [
+            "garystafford/wav2vec2-deepfake-voice-detector",
+            "mo-thecreator/Deepfake-audio-detection",
+        ]
+        for mid in model_ids:
+            try:
+                extractor = AutoFeatureExtractor.from_pretrained(mid)
+                model = AutoModelForAudioClassification.from_pretrained(mid)
+                model.eval()
+                loaded.append((mid, extractor, model))
+            except Exception:
+                continue
     except Exception:
-        return None
+        pass
+    return loaded
 
 
-@st.cache_resource(show_spinner="Loading Wav2Vec2 Acoustic Deepfake Model...")
-def load_audio_deepfake_model():
+# ==============================================================================
+# 1. URL, DNS & CLOUD THREAT INTELLIGENCE ENGINE
+# ==============================================================================
+def check_dns_and_url_intel(raw_url: str, vt_api_key: str = "") -> dict:
+    report = {
+        "normalized_url": raw_url,
+        "domain": "",
+        "dns_valid": False,
+        "resolved_ips": [],
+        "final_url": raw_url,
+        "redirect_hops": 0,
+        "urlhaus_hit": False,
+        "vt_malicious": 0,
+        "flags": [],
+    }
+    url = raw_url.strip().rstrip(".,);]}>\"'")
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    report["normalized_url"] = url
+
+    parsed = urlparse(url)
+    domain = (parsed.hostname or "").lower()
+    report["domain"] = domain
+    if not domain:
+        report["flags"].append("Malformed URL with missing domain host")
+        return report
+
+    shorteners = (
+        "bit.ly", "tinyurl.com", "t.co", "rb.gy", "is.gd", "cutt.ly",
+        "ow.ly", "shorturl.at", "tiny.cc", "rebrand.ly", "goo.gl",
+    )
+    if domain in shorteners or any(domain.endswith("." + s) for s in shorteners):
+        report["flags"].append(f"URL shortener ({domain}) hides the true destination website")
+
+    # Google Public DNS-over-HTTPS verification
     try:
-        return pipeline("audio-classification", model="MelodyMachine/Deepfake-audio-detection-V2")
-    except Exception:
-        return None
-
-
-# ---------------------------------------------------------
-# 4. FREE LIVE INTERNET THREAT INTELLIGENCE (NO API KEY NEEDED)
-# ---------------------------------------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def check_dns_live(domain: str) -> dict:
-    """Queries Google DNS-over-HTTPS over the internet to check if a domain is registered and active."""
-    clean_domain = domain.split(":")[0].strip().lower()
-    if not clean_domain or re.match(r"^\d{1,3}(\.\d{1,3}){3}$", clean_domain):
-        return {"exists": True, "ips": [clean_domain], "status_text": "Direct IP Address"}
-
-    try:
-        resp = requests.get(
+        dns_resp = requests.get(
             "https://dns.google/resolve",
-            params={"name": clean_domain, "type": "A"},
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            status_code = data.get("Status", -1)
-            answers = [ans.get("data") for ans in data.get("Answer", []) if ans.get("type") == 1]
-            if status_code == 0 and answers:
-                return {"exists": True, "ips": answers, "status_text": f"Active DNS ({answers[0]})"}
-            elif status_code == 3:
-                return {"exists": False, "ips": [], "status_text": "NXDOMAIN (Unregistered / Fake Domain)"}
-            else:
-                return {"exists": False, "ips": [], "status_text": "No Active Web Server Record"}
-    except Exception:
-        pass
-    return {"exists": None, "ips": [], "status_text": "DNS Check Unavailable"}
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def trace_url_redirects(raw_url: str) -> dict:
-    """Safely unshortens URLs over the internet to expose hidden redirect targets."""
-    target = raw_url if "://" in raw_url else f"https://{raw_url}"
-    try:
-        resp = requests.get(
-            target,
-            headers={"User-Agent": "Mozilla/5.0 (AegisAI-Security-Scanner)"},
-            timeout=5,
-            allow_redirects=True,
-            stream=True,
-        )
-        final_url = resp.url
-        hops = len(resp.history)
-        resp.close()
-        return {"final_url": final_url, "hops": hops, "reachable": True}
-    except Exception:
-        return {"final_url": target, "hops": 0, "reachable": False}
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def lookup_ip_free_intel(ip_str: str) -> dict:
-    """Queries free keyless ip-api.com for ISP, country, VPN/Proxy, and datacenter hosting intel."""
-    try:
-        ip_obj = ipaddress.ip_address(ip_str)
-        if not ip_obj.is_global:
-            return {"status": "private"}
-    except ValueError:
-        return {"status": "invalid"}
-
-    try:
-        resp = requests.get(
-            f"http://ip-api.com/json/{ip_str}",
-            params={"fields": "status,countryCode,isp,org,proxy,hosting"},
-            timeout=4,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("status") == "success":
-                return {
-                    "status": "found",
-                    "country": data.get("countryCode", "N/A"),
-                    "isp": data.get("isp", "Unknown"),
-                    "is_proxy": bool(data.get("proxy", False)),
-                    "is_hosting": bool(data.get("hosting", False)),
-                }
-    except Exception:
-        pass
-    return {"status": "unavailable"}
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def vt_lookup_optional(item: str, api_key: str, mode: str = "file") -> dict:
-    if len(api_key.strip()) <= 20:
-        return {"status": "no_key"}
-    headers = {"x-apikey": api_key.strip(), "accept": "application/json"}
-    try:
-        if mode == "file":
-            endpoint = f"https://www.virustotal.com/api/v3/files/{item}"
+            params={"name": domain, "type": "A"},
+            timeout=2.5,
+        ).json()
+        answers = [a.get("data") for a in dns_resp.get("Answer", []) if a.get("type") == 1]
+        if answers:
+            report["dns_valid"] = True
+            report["resolved_ips"] = answers
         else:
-            norm = item if "://" in item else f"http://{item}"
-            url_id = base64.urlsafe_b64encode(norm.encode("utf-8")).decode("utf-8").rstrip("=")
-            endpoint = f"https://www.virustotal.com/api/v3/urls/{url_id}"
-        resp = requests.get(endpoint, headers=headers, timeout=8)
-        if resp.status_code == 200:
-            stats = resp.json().get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
-            return {
-                "status": "found",
-                "malicious": stats.get("malicious", 0),
-                "suspicious": stats.get("suspicious", 0),
-                "total": sum(stats.values()),
-            }
-        return {"status": "not_found"}
+            report["flags"].append("Domain has no valid public DNS record (unregistered, suspended, or dead scam site)")
     except Exception:
-        return {"status": "error"}
-
-
-# ---------------------------------------------------------
-# 5. BRAND PROTECTION, URL, QR & UPI FORENSIC ENGINES
-# ---------------------------------------------------------
-OFFICIAL_BRAND_DOMAINS = {
-    "sbi": ("sbi.co.in", "onlinesbi.sbi", "sbicard.com"),
-    "hdfc": ("hdfcbank.com", "hdfc.com"),
-    "icici": ("icicibank.com",),
-    "axis": ("axisbank.com",),
-    "kotak": ("kotak.com",),
-    "pnb": ("pnbindia.in",),
-    "bob": ("bankofbaroda.in",),
-    "paytm": ("paytm.com", "paytmbank.com"),
-    "phonepe": ("phonepe.com",),
-    "gpay": ("google.com", "pay.google.com"),
-    "google": ("google.com", "youtube.com", "gmail.com", "googleapis.com"),
-    "amazon": ("amazon.in", "amazon.com", "amzn.to"),
-    "flipkart": ("flipkart.com",),
-    "indiapost": ("indiapost.gov.in",),
-    "uidai": ("uidai.gov.in",),
-    "aadhaar": ("uidai.gov.in",),
-    "incometax": ("incometax.gov.in",),
-    "irctc": ("irctc.co.in",),
-    "epfo": ("epfindia.gov.in",),
-    "paypal": ("paypal.com",),
-    "microsoft": ("microsoft.com", "live.com", "office.com"),
-    "apple": ("apple.com", "icloud.com"),
-    "netflix": ("netflix.com",),
-    "whatsapp": ("whatsapp.com", "wa.me"),
-    "instagram": ("instagram.com",),
-}
-
-
-def get_registrable_domain(hostname: str) -> str:
-    host = hostname.split(":")[0].lower().strip(".")
-    parts = host.split(".")
-    if len(parts) <= 2:
-        return host
-    multi_tlds = ("co.in", "gov.in", "nic.in", "ac.in", "org.in", "co.uk", "org.uk", "com.au")
-    if ".".join(parts[-2:]) in multi_tlds and len(parts) >= 3:
-        return ".".join(parts[-3:])
-    return ".".join(parts[-2:])
-
-
-def normalize_obfuscated_text(text: str) -> str:
-    cleaned = re.sub(r"(?<=\b[a-zA-Z])[.\-_*](?=[a-zA-Z]\b)", "", text)
-    leet_map = str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "@": "a", "$": "s"})
-    return cleaned.translate(leet_map).lower()
-
-
-def analyze_url_comprehensive(url: str, context_text: str = "") -> dict:
-    """Deep URL forensics: redirect tracing, Google DNS verification, brand spoofing & typosquatting."""
-    risk_score = 0
-    flags = []
-    safe_notes = []
-
-    raw_url = url.strip()
-    lower_raw = raw_url.lower()
-
-    if lower_raw.startswith(("javascript:", "data:", "file:", "intent://")):
-        return {
-            "score": 95,
-            "flags": [f"Dangerous executable URI scheme ({lower_raw.split(':')[0]})"],
-            "safe_notes": [],
-            "final_url": raw_url,
-            "root_domain": "N/A",
-            "dns_status": "Blocked URI Scheme",
-        }
-
-    redirect_info = trace_url_redirects(raw_url)
-    target_url = redirect_info["final_url"]
-    if redirect_info["hops"] > 0 and target_url.lower() != raw_url.lower():
-        flags.append(f"Redirected ({redirect_info['hops']} hop) to: {target_url}")
-
-    if re.search(r"\.(apk|exe|scr|bat|ps1|vbs|msi|dmg)(\?|$)", target_url.lower()):
-        risk_score += 75
-        flags.append("Direct executable / Android APK malware download link detected")
-
-    parsed = urlparse(target_url if "://" in target_url else f"http://{target_url}")
-    hostname = parsed.netloc.lower().split("@")[-1]
-    domain_no_port = hostname.split(":")[0]
-    root_domain = get_registrable_domain(domain_no_port)
-
-    dns_info = check_dns_live(domain_no_port)
-    if dns_info["exists"] is False:
-        risk_score += 35
-        flags.append(f"Live DNS Check: {dns_info['status_text']} — domain is not active on the internet")
-
-    if "@" in parsed.netloc:
-        risk_score += 60
-        flags.append("Contains '@' credential/host spoofing trick")
-
-    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain_no_port):
-        risk_score += 55
-        flags.append("Uses raw IP address instead of a registered domain")
-
-    if "xn--" in domain_no_port:
-        risk_score += 50
-        flags.append("Contains Punycode ('xn--') lookalike domain spoofing")
-
-    matched_official = False
-    for brand, official_domains in OFFICIAL_BRAND_DOMAINS.items():
-        if root_domain in official_domains:
-            matched_official = True
-            safe_notes.append(f"Verified official {brand.upper()} domain ({root_domain})")
-            break
-
-        if brand in domain_no_port:
-            risk_score += 70
-            flags.append(
-                f"BRAND IMPERSONATION: '{domain_no_port}' uses '{brand.upper()}' in its domain "
-                f"but is NOT an official domain ({', '.join(official_domains)})"
-            )
-            break
-
-        domain_label = root_domain.split(".")[0]
-        if len(domain_label) >= 5 and len(brand) >= 4:
-            if 0.80 <= difflib.SequenceMatcher(None, domain_label, brand).ratio() < 1.0:
-                risk_score += 60
-                flags.append(f"Typosquatting alert: '{root_domain}' imitates '{brand}'")
-                break
-
-    if parsed.scheme == "http" and not matched_official:
-        risk_score += 20
-        flags.append("Unencrypted HTTP connection (no SSL/TLS certificate)")
+        report["flags"].append("DNS lookup timed out or blocked")
 
     suspicious_tlds = (
         ".xyz", ".top", ".tk", ".ml", ".ga", ".cf", ".gq", ".icu",
-        ".buzz", ".click", ".loan", ".work", ".vip", ".online", ".site", ".cfd", ".sbs",
+        ".vip", ".click", ".buzz", ".sbs", ".cfd", ".live", ".online", ".site",
     )
-    if any(domain_no_port.endswith(tld) for tld in suspicious_tlds):
-        risk_score += 35
-        flags.append(f"High-abuse disposable TLD ({root_domain})")
+    if domain.endswith(suspicious_tlds):
+        report["flags"].append(f"High-risk top-level domain ({os.path.splitext(domain)[1]}) frequently used in scam links")
+    if "xn--" in domain:
+        report["flags"].append("Punycode homograph domain detected (spoofs official characters)")
+    try:
+        ipaddress.ip_address(domain)
+        report["flags"].append("Raw IP address used instead of an official domain name")
+    except ValueError:
+        pass
 
-    shorteners = (
-        "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd",
-        "rb.gy", "cutt.ly", "shorturl.at", "qrco.de", "me-qr.com", "qrfy.com", "tiny.cc",
+    indian_brands = [
+        "sbi", "hdfc", "icici", "axis", "pnb", "bob", "kotak", "paytm", "phonepe",
+        "gpay", "bhim", "npci", "uidai", "aadhaar", "epfo", "irctc", "incometax",
+        "parivahan", "challan", "bescom", "mahavitaran", "indiapost", "trai", "rbi", "lic",
+    ]
+    official_domains = (
+        "sbi.co.in", "onlinesbi.sbi", "hdfcbank.com", "icicibank.com", "axisbank.com",
+        "pnbindia.in", "bankofbaroda.in", "kotak.com", "paytm.com", "phonepe.com",
+        "npci.org.in", "uidai.gov.in", "epfindia.gov.in", "irctc.co.in",
+        "incometax.gov.in", "parivahan.gov.in", "indiapost.gov.in", "trai.gov.in",
+        "rbi.org.in", "licindia.in",
     )
-    if any(root_domain == s or domain_no_port.endswith("." + s) for s in shorteners):
-        risk_score += 30
-        flags.append(f"URL shortener / dynamic QR redirector ({root_domain})")
+    if any(b in domain for b in indian_brands) and not domain.endswith(official_domains):
+        report["flags"].append("Impersonates an Indian bank, UPI service, or Government portal on an unofficial domain")
 
-    lure_words = (
-        "login", "signin", "verify", "update", "bank", "secure", "kyc",
-        "wallet", "upi", "otp", "account", "refund", "cashback", "prize", "reward", "suspend", "pan",
-    )
-    url_tokens = f"{domain_no_port}{parsed.path.lower()}"
-    matched_lures = [w for w in lure_words if w in url_tokens]
-    if matched_lures and not matched_official:
-        risk_score += min(45, len(matched_lures) * 15)
-        flags.append(f"Phishing lure keywords in URL: {', '.join(matched_lures)}")
+    if any(ext in parsed.path.lower() for ext in (".apk", ".exe", ".msi", ".bat", ".scr", ".vbs", ".ps1")):
+        report["flags"].append("CRITICAL: Link points directly to a downloadable executable/APK file")
 
-    if domain_no_port.count("-") >= 2 and not matched_official:
-        risk_score += 25
-        flags.append("Multiple hyphens in domain name (common fake-site pattern)")
+    try:
+        resp = requests.head(url, allow_redirects=True, timeout=2.5, headers={"User-Agent": "AegisAI-CitizenGuard/5.2"})
+        report["final_url"] = resp.url
+        report["redirect_hops"] = len(resp.history)
+        final_host = (urlparse(resp.url).hostname or "").lower()
+        if len(resp.history) >= 2:
+            report["flags"].append(f"Multi-hop redirect chain ({len(resp.history)} hops -> {final_host})")
+        if any(ext in resp.url.lower() for ext in (".apk", ".exe", ".zip")):
+            report["flags"].append(f"Redirects to a downloadable payload ({resp.url})")
+    except Exception:
+        pass
 
-    if matched_official and not flags:
-        risk_score = 0
+    # Abuse.ch URLhaus live malware feed (Free, no key required)
+    try:
+        uh = requests.post("https://urlhaus-api.abuse.ch/v1/url/", data={"url": url}, timeout=2.5).json()
+        if uh.get("query_status") == "ok":
+            report["urlhaus_hit"] = True
+            threat_name = uh.get("threat", "Malware distribution")
+            report["flags"].append(f"CONFIRMED MALWARE URL in Abuse.ch URLhaus database ({threat_name})")
+    except Exception:
+        pass
 
-    return {
-        "score": min(100, risk_score),
-        "flags": flags,
-        "safe_notes": safe_notes,
-        "final_url": target_url,
-        "root_domain": root_domain,
-        "dns_status": dns_info["status_text"],
-    }
-
-
-def analyze_upi_qr(upi_uri: str) -> dict:
-    """Forensic audit of UPI payment QR codes (upi://pay?...)."""
-    parsed = urlparse(upi_uri)
-    params = parse_qs(parsed.query)
-
-    pa = params.get("pa", [""])[0].strip()
-    pn = params.get("pn", ["Unknown"])[0].strip()
-    am = params.get("am", [""])[0].strip()
-    tn = params.get("tn", [""])[0].strip()
-    mc = params.get("mc", [""])[0].strip()
-
-    risk_score = 0
-    flags = []
-    info = {
-        "Payee UPI ID (pa)": pa or "Missing!",
-        "Payee Name (pn)": pn,
-        "Amount (am)": f"₹{am}" if am else "Open (User enters amount)",
-        "Note (tn)": tn or "None",
-        "Merchant Code (mc)": mc if mc and mc != "0000" else "None (Personal Account)",
-    }
-
-    if not pa or "@" not in pa:
-        risk_score += 75
-        flags.append("Invalid or missing UPI ID ('pa' parameter)")
-
-    lure_text = f"{pn} {tn} {pa}".lower()
-    scam_lures = (
-        "refund", "cashback", "prize", "reward", "lottery", "winner",
-        "receive", "credit", "claim", "kyc", "subsidy", "bonus", "gift",
-    )
-    matched_lures = [w for w in scam_lures if w in lure_text]
-    if matched_lures:
-        risk_score += 85
-        flags.append(
-            f"CRITICAL UPI SCAM TRAP: QR mentions '{', '.join(matched_lures)}'. "
-            "Scanning a UPI QR ALWAYS deducts money—you NEVER scan a QR code or enter your PIN to receive money!"
-        )
-
-    brand_names = ("sbi", "hdfc", "icici", "axis", "paytm", "phonepe", "amazon", "flipkart", "govt", "electricity", "customs")
-    if any(b in pn.lower() for b in brand_names) and (not mc or mc == "0000"):
-        risk_score += 60
-        flags.append(f"Payee '{pn}' impersonates an official brand/dept using an unverified personal UPI ID!")
-
-    if am:
+    if vt_api_key.strip():
         try:
-            if float(am) > 0:
-                risk_score += 20
-                flags.append(f"Pre-filled fixed amount of ₹{float(am):,.2f} embedded in QR—confirm before entering PIN")
-        except ValueError:
-            risk_score += 30
-            flags.append("Corrupted amount parameter in QR")
-
-    return {"score": min(100, risk_score), "flags": flags, "info": info}
-
-
-def analyze_any_qr_payload(payload: str, vt_key: str) -> dict:
-    """Universal classifier for ALL QR payload types (UPI, URL, Wi-Fi, SMS, Email, Tel, vCard, Text)."""
-    clean = payload.strip()
-    low = clean.lower()
-
-    if low.startswith("upi://"):
-        rep = analyze_upi_qr(clean)
-        return {"category": "UPI Payment QR", "score": rep["score"], "details": rep}
-
-    if low.startswith("wifi:"):
-        # Format: WIFI:T:WPA;S:MyNetwork;P:password;;
-        ssid_match = re.search(r"S:([^;]*)", clean, flags=re.IGNORECASE)
-        enc_match = re.search(r"T:([^;]*)", clean, flags=re.IGNORECASE)
-        ssid = ssid_match.group(1) if ssid_match else "Unknown"
-        enc = (enc_match.group(1) if enc_match else "NONE").upper()
-        score = 55 if enc in ("", "NOPASS", "NONE", "WEP") else 20
-        flags = [f"Network SSID: '{ssid}' | Encryption: {enc}"]
-        if score >= 50:
-            flags.append("UNENCRYPTED / OPEN WI-FI QR: Attackers use rogue open Wi-Fi QRs to intercept traffic!")
-        else:
-            flags.append("Verify you recognize this Wi-Fi network before auto-connecting.")
-        return {"category": "Wi-Fi Auto-Connect QR", "score": score, "flags": flags}
-
-    if low.startswith(("smsto:", "sms:", "matmsg:", "mailto:", "tel:")):
-        return {
-            "category": "Action Trigger QR (SMS/Call/Email)",
-            "score": 60,
-            "flags": [
-                f"Triggers an automatic device action ({clean.split(':')[0].upper()})",
-                "Scammers use SMS/Call QR codes to send premium-rate messages or initiate vishing calls.",
-            ],
-        }
-
-    if low.startswith(("http://", "https://", "www.", "javascript:", "data:", "intent://")) or re.match(
-        r"^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}", clean
-    ):
-        url_rep = analyze_url_comprehensive(clean)
-        vt_res = vt_lookup_optional(clean, vt_key, mode="url")
-        score = max(url_rep["score"], 100 if vt_res.get("malicious", 0) > 0 else 0)
-        return {"category": "Web Link / URL QR", "score": score, "url_rep": url_rep, "vt_res": vt_res}
-
-    return {
-        "category": "Plain Text / Contact QR",
-        "score": 0,
-        "flags": ["Contains plain text or contact card data with no executable link or payment request."],
-    }
-
-
-def decode_qr_6pass(img_bgr: np.ndarray) -> tuple[list[str], str]:
-    """
-    6-pass QR decoder with white quiet-zone padding, multi-scale resizing,
-    contrast enhancement, dark-mode inversion, and ArUco-assisted detection.
-    """
-    detectors = [("Standard QR", cv2.QRCodeDetector())]
-    if hasattr(cv2, "QRCodeDetectorAruco"):
-        try:
-            detectors.insert(0, ("ArUco-Enhanced QR", cv2.QRCodeDetectorAruco()))
+            url_id = base64.urlsafe_b64encode(url.encode()).decode().strip("=")
+            vt_resp = requests.get(
+                f"https://www.virustotal.com/api/v3/urls/{url_id}",
+                headers={"x-apikey": vt_api_key.strip()},
+                timeout=3.5,
+            )
+            if vt_resp.status_code == 200:
+                stats = vt_resp.json()["data"]["attributes"]["last_analysis_stats"]
+                mal = int(stats.get("malicious", 0))
+                report["vt_malicious"] = mal
+                if mal > 0:
+                    report["flags"].append(f"VirusTotal flagged malicious by {mal} security engines")
         except Exception:
             pass
 
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape[:2]
+    return report
 
-    # Pass 1 & 2: Original + White Quiet-Zone Border (fixes tightly cropped QR screenshots)
-    pad = max(30, int(min(h, w) * 0.12))
-    bordered = cv2.copyMakeBorder(gray, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=255)
 
-    # Pass 3: Normalized scale (ideal ~700px width for large phone screenshots or tiny thumbnails)
-    scale = 700.0 / max(1, max(h, w))
-    resized = cv2.resize(bordered, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+# ==============================================================================
+# 2. 8-PASS UPI & QR CODE FORENSIC SCANNER
+# ==============================================================================
+def decode_qr_multipass(pil_img: Image.Image) -> list:
+    """8-pass OpenCV + Otsu + CLAHE + Sharpened QR decoder for real-world photos and screenshots."""
+    rgb = np.array(pil_img.convert("RGB"))
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # Pass 4: CLAHE Contrast Enhancement + Otsu Binary Threshold
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8)).apply(resized)
-    _, otsu = cv2.threshold(clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # Add quiet-zone white border in case screenshot cropped tightly around QR corners
+    padded = cv2.copyMakeBorder(gray, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
 
-    # Pass 5: Inverted Polarity (for white-on-black dark mode QR codes)
-    inverted = cv2.bitwise_not(otsu)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(padded)
 
-    passes = [
-        ("Original Image", img_bgr),
-        ("Quiet-Zone White Border Pass", bordered),
-        ("Normalized Multi-Scale Pass", resized),
-        ("CLAHE + Otsu Binary Pass", otsu),
-        ("Dark-Mode Inverted Pass", inverted),
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    sharpened = cv2.filter2D(enhanced, -1, kernel)
+    _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    variants = [
+        bgr,
+        padded,
+        enhanced,
+        sharpened,
+        otsu,
+        cv2.resize(enhanced, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC),
+        cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5),
+        cv2.bitwise_not(enhanced),
     ]
 
-    for det_name, detector in detectors:
-        for pass_name, frame in passes:
-            try:
-                ok, multi_data, _, _ = detector.detectAndDecodeMulti(frame)
-                if ok and multi_data:
-                    clean = [d.strip() for d in multi_data if d and d.strip()]
-                    if clean:
-                        return clean, f"{det_name} ({pass_name})"
-            except Exception:
-                pass
-            try:
-                single, _, _ = detector.detectAndDecode(frame)
-                if single and single.strip():
-                    return [single.strip()], f"{det_name} ({pass_name})"
-            except Exception:
-                pass
+    detector = cv2.QRCodeDetector()
+    found = []
 
-    return [], "None"
-
-
-# ---------------------------------------------------------
-# 6. SMS PHISHING & BINARY MALWARE ENGINES
-# ---------------------------------------------------------
-def analyze_sms_full(sms_text: str, bert_clf, vt_key: str) -> dict:
-    norm_text = normalize_obfuscated_text(sms_text)
-    risk_score = 0
-    reasons = []
-    phishing_prob = 0.0
-
-    if bert_clf is not None:
+    for img_var in variants:
         try:
-            out = bert_clf(sms_text[:512])[0]
-            lbl = out["label"].lower()
-            conf = out["score"] * 100
-            is_phish = any(k in lbl for k in ("phish", "spam", "malicious", "fraud", "label_1"))
-            phishing_prob = conf if is_phish else (100.0 - conf)
-            if phishing_prob >= 65:
-                risk_score += 50
-                reasons.append(f"BERT Phishing AI flagged message ({phishing_prob:.1f}% confidence)")
-            elif phishing_prob >= 40:
-                risk_score += 25
-                reasons.append(f"BERT Phishing AI detected moderate risk phrasing ({phishing_prob:.1f}%)")
+            ok, decoded_info, _, _ = detector.detectAndDecodeMulti(img_var)
+            if ok and decoded_info:
+                for item in decoded_info:
+                    if item and item.strip() and item.strip() not in found:
+                        found.append(item.strip())
         except Exception:
-            phishing_prob = 0.0
-
-    url_pattern = r"(?:https?://[^\s<>\"']+|www\.[^\s<>\"']+|\b[a-zA-Z0-9-]+\.(?:com|in|co\.in|org|net|xyz|top|tk|ml|ga|cf|gq|icu|vip|online|site|club|live|info|biz|ly|co|me|to)(?:/[^\s<>\"']*)?)"
-    raw_urls = list(dict.fromkeys(re.findall(url_pattern, sms_text, flags=re.IGNORECASE)))
-
-    url_reports = []
-    for u in raw_urls:
-        rep = analyze_url_comprehensive(u, context_text=sms_text)
-        vt_res = vt_lookup_optional(u, vt_key, mode="url")
-        url_reports.append((u, rep, vt_res))
-        if rep["score"] >= 35:
-            risk_score = max(risk_score, rep["score"])
-            reasons.append(f"High-risk link '{u}' (Risk: {rep['score']}/100)")
-        if vt_res.get("malicious", 0) > 0:
-            risk_score = 100
-            reasons.append(f"VirusTotal flagged '{u}' as MALICIOUS ({vt_res['malicious']} engines)")
-
-    threats = (
-        "suspend", "suspended", "block", "blocked", "deactivate", "deactivated",
-        "disconnect", "disconnected", "expire", "expired", "freeze", "frozen",
-        "terminate", "penalty", "legal action", "arrest", "customs", "seized", "hold",
-    )
-    urgencies = (
-        "urgent", "immediately", "today", "within 24", "within 2 hours", "tonight",
-        "last warning", "final notice", "act now", "right now", "asap", "hurry",
-    )
-    actions = (
-        "update kyc", "pan update", "verify", "click here", "click below", "tap here",
-        "claim", "won", "lottery", "prize", "cashback", "refund", "share otp", "send otp",
-        "apk", "download", "customer care", "helpline",
-    )
-
-    found_t = [w for w in threats if w in norm_text]
-    found_u = [w for w in urgencies if w in norm_text]
-    found_a = [w for w in actions if w in norm_text]
-
-    if found_t:
-        risk_score += 25
-        reasons.append(f"Account/service threat trigger: {', '.join(found_t[:3])}")
-    if found_u:
-        risk_score += 20
-        reasons.append(f"Artificial urgency trigger: {', '.join(found_u[:3])}")
-    if found_a:
-        risk_score += 25
-        reasons.append(f"Action/credential lure trigger: {', '.join(found_a[:3])}")
-
-    mobiles = re.findall(r"(?:\+91[\-\s]?|0)?[6-9]\d{9}\b", sms_text)
-    if mobiles and (found_t or found_a or any(b in norm_text for b in OFFICIAL_BRAND_DOMAINS)):
-        risk_score += 45
-        reasons.append(
-            f"Callback scam trap: embeds personal mobile number ({', '.join(mobiles)}) instead of an official 1800 helpline"
-        )
-
-    is_real_otp = (
-        bool(re.search(r"\b(otp|one time password|verification code)\b", norm_text))
-        and bool(re.search(r"\b(do not share|never share|valid for \d+ min)\b", norm_text))
-        and len(raw_urls) == 0
-        and len(mobiles) == 0
-        and not found_t
-    )
-    if is_real_otp:
-        risk_score = min(risk_score, 8)
-        reasons = ["Matches legitimate transactional OTP format (no links, no personal callback numbers, warns not to share)"]
-
-    return {
-        "risk_score": min(100, risk_score),
-        "phishing_prob": phishing_prob,
-        "reasons": reasons,
-        "url_reports": url_reports,
-    }
+            pass
+        if not found:
+            try:
+                single, _, _ = detector.detectAndDecode(img_var)
+                if single and single.strip() and single.strip() not in found:
+                    found.append(single.strip())
+            except Exception:
+                pass
+        if found:
+            break
+    return found
 
 
-def scan_binary_heuristics(file_bytes: bytes, filename: str) -> dict:
-    sha256 = hashlib.sha256(file_bytes).hexdigest()
-    if file_bytes:
-        counts = np.bincount(np.frombuffer(file_bytes, dtype=np.uint8), minlength=256)
-        probs = counts[counts > 0] / len(file_bytes)
-        entropy = float(-np.sum(probs * np.log2(probs)))
-    else:
-        entropy = 0.0
-
+def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
+    score = 0
     findings = []
-    risk_score = 0
+    meta = {"Type": "Plain Text", "Raw Payload": payload}
 
-    if file_bytes[:2] == b"MZ":
-        findings.append("Windows Executable (PE/MZ) binary header detected")
-    elif file_bytes[:4] == b"\x7fELF":
-        findings.append("Linux/Unix ELF binary header detected")
-    elif file_bytes[:4] == b"PK\x03\x04" and filename.lower().endswith(".apk"):
-        findings.append("Android Package (APK) archive detected")
+    raw = payload.strip()
+    low = raw.lower()
 
-    if entropy >= 7.2:
-        risk_score += 40
-        findings.append(f"High Shannon Entropy ({entropy:.2f}/8.0) — indicates encrypted, packed, or obfuscated payload")
-    elif entropy >= 6.5:
-        risk_score += 15
-        findings.append(f"Elevated Entropy ({entropy:.2f}/8.0) — compressed or dense binary data")
+    if raw.startswith("000201"):
+        meta["Type"] = "EMVCo / BharatQR Merchant Standard"
+        findings.append("Valid EMVCo / NPCI BharatQR tag structure detected (000201)")
+        upi_match = re.search(r"([a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64})", raw)
+        if upi_match:
+            extracted_vpa = upi_match.group(1)
+            meta["Extracted VPA"] = extracted_vpa
+            findings.append(f"Embedded Merchant VPA: {extracted_vpa}")
+        else:
+            score += 35
+            findings.append("BharatQR payload lacks a recognizable UPI VPA identifier")
+        if "5802in" not in low:
+            score += 30
+            findings.append("Country code is not 'IN' (India) — potential cross-border spoofed QR")
 
-    signatures = [
-        (b"VirtualAllocEx", "Process injection API (VirtualAllocEx)"),
-        (b"WriteProcessMemory", "Remote memory tampering API (WriteProcessMemory)"),
-        (b"CreateRemoteThread", "Remote thread execution API (CreateRemoteThread)"),
-        (b"IsDebuggerPresent", "Anti-debugging evasion check"),
-        (b"powershell -enc", "Encoded PowerShell command execution"),
-        (b"cmd.exe /c", "Hidden command shell invocation"),
-        (b"WScript.Shell", "Windows Script Host execution"),
-        (b"eval(base64_decode", "Obfuscated script payload execution"),
-        (b"android.permission.RECEIVE_SMS", "Android SMS interception permission (common in banking trojans)"),
-        (b"android.permission.BIND_ACCESSIBILITY_SERVICE", "Android Accessibility takeover permission"),
-    ]
-    lower_bytes = file_bytes.lower()
-    for sig, desc in signatures:
-        if sig.lower() in lower_bytes:
-            risk_score += 22
-            findings.append(f"Suspicious signature matched: {desc}")
+    elif low.startswith("upi://"):
+        meta["Type"] = "UPI Payment Intent"
+        parsed = urlparse(raw)
+        action = parsed.path.lstrip("/").lower()
+        params = parse_qs(parsed.query)
 
-    if re.search(r"\.(pdf|doc|docx|jpg|png|txt)\.(exe|scr|bat|ps1|vbs|js|apk)$", filename.lower()):
-        risk_score += 50
-        findings.append("Double-extension file masquerading detected")
+        pa = unquote(params.get("pa", [""])[0]).strip()
+        pn = unquote(params.get("pn", [""])[0]).strip()
+        am = params.get("am", [""])[0].strip()
+        mc = params.get("mc", [""])[0].strip()
+        orgid = params.get("orgid", [""])[0].strip()
+        sign = params.get("sign", [""])[0].strip()
+        url_param = unquote(params.get("url", [""])[0]).strip()
 
-    return {
-        "sha256": sha256,
-        "entropy": entropy,
-        "risk_score": min(100, risk_score),
-        "findings": findings,
-    }
+        meta.update({
+            "Action": action or "pay",
+            "Payee VPA (pa)": pa or "MISSING",
+            "Payee Name (pn)": pn or "Not Specified",
+            "Amount (am)": f"₹{am}" if am else "User-Entered",
+            "Merchant Code (mc)": mc or "Peer-to-Peer (P2P)",
+            "NPCI Signature (sign)": "Present" if sign else "Unsigned",
+        })
 
+        if action in ("collect", "mandate", "autopay"):
+            score += 85
+            findings.append(f"CRITICAL SCAM TRAP: QR triggers a UPI '{action.upper()}' pull request — scanning a QR is ONLY for paying money, NEVER for receiving money!")
 
-# ---------------------------------------------------------
-# 7. 24/7 AI CYBER SECURITY ASSISTANT
-# ---------------------------------------------------------
-def generate_ai_support_reply(user_query: str) -> str:
-    q = user_query.lower().strip()
-    last_scan = st.session_state.get("last_scan_summary", "No scans run yet.")
+        if am:
+            try:
+                amt_val = float(am)
+                if amt_val > 0:
+                    score += 25
+                    findings.append(f"Pre-locked deduction amount of ₹{amt_val:,.2f} embedded in QR — verify before entering UPI PIN")
+            except ValueError:
+                score += 35
+                findings.append(f"Malformed amount parameter in UPI string: '{am}'")
 
-    if any(k in q for k in ("last scan", "result", "why", "explain", "flagged", "what happened")):
-        return (
-            f"### 🔍 Breakdown of Your Latest Scan\n"
-            f"**Recorded Result:** {last_scan}\n\n"
-            f"**What You Should Do:**\n"
-            f"- **Score 50–100 (High Risk):** Treat as a confirmed scam or threat. Do **not** click links, install `.apk` files, or enter your UPI PIN/OTP.\n"
-            f"- **Score 20–49 (Caution):** Double-check the sender or merchant manually before proceeding.\n"
-            f"- **Already clicked or paid?** Call **1930** (National Cyber Crime Helpline) or report at **cybercrime.gov.in** immediately."
-        )
+        valid_psp_handles = {
+            "okicici", "okhdfcbank", "okaxis", "oksbi", "ybl", "ibl", "axl",
+            "paytm", "ptyes", "ptaxis", "pthdfc", "ptsbi", "upi", "apl", "rapl",
+            "icici", "sbi", "hdfcbank", "axisbank", "kotak", "indus", "federal",
+            "aubank", "idfcfirst", "yesbank", "barodampay", "mahb", "cnrb", "uboi",
+            "jio", "airtel", "freecharge", "ikwik", "sliceaxis", "naviaxis", "fam",
+        }
+        if not pa or "@" not in pa:
+            score += 65
+            findings.append("INVALID UPI QR: Missing or malformed Payee VPA ('pa' parameter)")
+        else:
+            user_part, psp_handle = pa.split("@", 1)
+            if psp_handle.lower() not in valid_psp_handles:
+                score += 25
+                findings.append(f"Uncommon/unverified PSP bank handle '@{psp_handle}' — double-check recipient name in your UPI app")
 
-    if any(k in q for k in ("upi", "qr", "payment", "money", "paytm", "gpay", "phonepe")):
-        return (
-            "### 📷 QR Code & UPI Fraud Protection Guide\n"
-            "1. **Golden Rule:** Scanning a QR code and entering your UPI PIN **ALWAYS deducts money** from your account. You never need to scan a QR code to *receive* money, cashback, or a refund.\n"
-            "2. **Check Merchant vs. Personal:** Legitimate shops use verified Merchant QR codes. Scammers use personal UPI IDs (`@okaxis`, `@ybl`) disguised with names like *'Refund Support'*.\n"
-            "3. **Use Our 3 QR Modes:** You can upload a QR screenshot, hold a QR up to your MacBook webcam, or paste any QR link in the **📷 QR & UPI Scanner** tab."
-        )
+            scam_keywords = [
+                "refund", "cashback", "prize", "lottery", "reward", "kyc",
+                "helpline", "support", "customercare", "care", "offer", "olx",
+                "army", "soldier", "challan", "electricity", "customs", "claim",
+            ]
+            combined_identity = f"{user_part} {pn}".lower()
+            if any(w in combined_identity for w in scam_keywords):
+                score += 70
+                findings.append("FRAUD ALERT: Payee VPA/name uses Indian refund, cashback, or customer-care scam keywords")
 
-    if any(k in q for k in ("sms", "kyc", "otp", "link", "phishing", "bank", "message")):
-        return (
-            "### 💬 How to Spot Fake Bank SMS & Phishing\n"
-            "- **Fake Urgency:** Scammers claim your bank account, PAN KYC, or SIM will be *'blocked today'*.\n"
-            "- **Lookalike Domains:** Real banks only use their exact root domain (`sbi.co.in`, `hdfcbank.com`), never `sbi-kyc-update.xyz`.\n"
-            "- **Personal Phone Numbers:** Real banks never ask you to call a 10-digit mobile number for KYC updates."
-        )
+            corp_tokens = ("pvt", "ltd", "limited", "store", "mart", "enterprises", "corp", "gov", "ministry", "bank", "airways", "railways")
+            if any(t in pn.lower() for t in corp_tokens) and not mc and not orgid and not sign:
+                score += 30
+                findings.append("Claims to be a company/government merchant in Payee Name, but lacks NPCI Merchant Code (mc), OrgID, and signature")
 
-    if any(k in q for k in ("deepfake", "voice", "call", "video", "clone", "ai")):
-        return (
-            "### 🎭 AI Deepfake & Voice Clone Safety\n"
-            "- **Family Code Word:** Agree on a secret family safe-word for urgent phone or video money requests.\n"
-            "- **Test Media Here:** Upload suspicious profile photos/videos to **🎭 Deepfake Media** or voice clips to **🎙️ Voice Clone AI**."
-        )
+        if url_param:
+            u_rep = check_dns_and_url_intel(url_param, vt_api_key)
+            if u_rep["flags"]:
+                score += len(u_rep["flags"]) * 25
+                findings.extend([f"Embedded UPI URL ({url_param}): {flg}" for flg in u_rep["flags"]])
 
-    if any(k in q for k in ("virus", "malware", "apk", "file", "hacked")):
-        return (
-            "### 🦠 Malware & Fake APK Protection\n"
-            "- Never install `.apk` files sent on WhatsApp (often disguised as *'Wedding Invite.apk'* or *'RTO Challan.apk'*).\n"
-            "- Scan downloaded files in **🦠 Malware & APK Scan** before opening them."
-        )
+        if not findings:
+            findings.append(f"Standard P2P/Merchant UPI QR for {pn or pa}. Always verify the recipient name on your UPI PIN screen.")
 
-    return (
-        "### 🛡️ AegisAI Support Assistant\n"
-        "Ask me any question, such as:\n"
-        "- *'Explain my last scan result'*\n"
-        "- *'How do fake UPI QR scams work?'*\n"
-        "- *'How do I spot fake bank KYC SMS?'*\n"
-        "- *'How do I detect AI voice clones and deepfakes?'*\n\n"
-        f"**Latest Session Activity:** {last_scan}"
-    )
-
-
-# ---------------------------------------------------------
-# 8. MAIN ALL-ROUNDER TABS
-# ---------------------------------------------------------
-(
-    tab_qr,
-    tab_sms,
-    tab_url,
-    tab_deepfake,
-    tab_voice,
-    tab_malware,
-    tab_network,
-    tab_support,
-) = st.tabs(
-    [
-        "📷 QR & UPI Scanner",
-        "💬 SMS & Phishing",
-        "🌐 Website & Link Check",
-        "🎭 Deepfake Media",
-        "🎙️ Voice Clone AI",
-        "🦠 Malware & APK Scan",
-        "📡 Live Network Guard",
-        "🤖 AI Support & Guide",
-    ]
-)
-
-# =========================================================
-# TAB 1: ALL-TYPE QR CODE & UPI SCAM SCANNER
-# =========================================================
-with tab_qr:
-    st.subheader("📷 Universal QR Code & UPI Payment Scam Scanner (6-Pass CV + Live Internet Intel)")
-
-    qr_source = st.radio(
-        "Select QR Input Method:",
-        [
-            "📤 Upload QR Screenshot / Photo",
-            "📸 Scan QR Live via Webcam",
-            "🧪 Test QR Text / UPI / URL Directly",
-        ],
-        horizontal=True,
-        help="Supports cropped QR screenshots, dark-mode QR codes, live camera scanning, and direct payload testing.",
-    )
-
-    decoded_payloads = []
-    decode_method = "Direct Input"
-
-    if qr_source.startswith("📤"):
-        qr_img_file = st.file_uploader(
-            "Upload any QR code image (PNG, JPG, WEBP)",
-            type=["png", "jpg", "jpeg", "webp"],
-            help="Automatically applies 6 computer-vision passes including quiet-zone padding and dark-mode inversion.",
-        )
-        if qr_img_file and st.button("🔍 Scan Uploaded QR Code", type="primary"):
-            file_bytes = np.asarray(bytearray(qr_img_file.read()), dtype=np.uint8)
-            img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            if img_bgr is not None:
-                st.image(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB), width=230)
-                decoded_payloads, decode_method = decode_qr_6pass(img_bgr)
-                if not decoded_payloads:
-                    st.error(
-                        "❌ No QR code detected in this image. Ensure the 3 square corner markers of the QR code are visible."
-                    )
-            else:
-                st.error("❌ Invalid image file.")
-
-    elif qr_source.startswith("📸"):
-        cam_photo = st.camera_input("Hold the QR code steady in front of your webcam and click Take Photo")
-        if cam_photo is not None:
-            cam_bytes = np.asarray(bytearray(cam_photo.read()), dtype=np.uint8)
-            cam_bgr = cv2.imdecode(cam_bytes, cv2.IMREAD_COLOR)
-            if cam_bgr is not None:
-                decoded_payloads, decode_method = decode_qr_6pass(cam_bgr)
-                if not decoded_payloads:
-                    st.warning("⚠️ Could not read QR from camera snapshot—move closer or improve lighting and retake.")
-
+    elif low.startswith(("http://", "https://", "www.")):
+        meta["Type"] = "Web URL / Download Link"
+        url_rep = check_dns_and_url_intel(raw, vt_api_key)
+        meta["Domain"] = url_rep["domain"]
+        meta["DNS Valid"] = "Yes" if url_rep["dns_valid"] else "No"
+        meta["Resolved IPs"] = ", ".join(url_rep["resolved_ips"]) or "None"
+        findings.extend(url_rep["flags"])
+        score += len(url_rep["flags"]) * 30
+        if not findings:
+            findings.append(f"Domain '{url_rep['domain']}' resolves cleanly with no known malware or phishing flags")
     else:
-        c_q1, c_q2, c_q3, c_q4 = st.columns(4)
-        if c_q1.button("🚨 Fake UPI Refund QR"):
-            st.session_state["qr_direct_val"] = "upi://pay?pa=refundhelp99@okaxis&pn=SBI%20Cashback%20Refund&am=4999&tn=Claim%20Refund"
-        if c_q2.button("🚨 Fake Bank Link QR"):
-            st.session_state["qr_direct_val"] = "http://hdfc-kyc-rewards-claim.xyz/login"
-        if c_q3.button("🚨 Rogue Open Wi-Fi QR"):
-            st.session_state["qr_direct_val"] = "WIFI:T:nopass;S:Free_Airport_VIP_WiFi;P:;;"
-        if c_q4.button("✅ Real Official QR"):
-            st.session_state["qr_direct_val"] = "https://www.hdfcbank.com"
-
-        direct_val = st.text_input(
-            "Enter or paste any QR payload:",
-            key="qr_direct_val",
-            placeholder="e.g. upi://pay?pa=... or https://... or WIFI:...",
-        )
-        if st.button("🔍 Analyze QR Payload", type="primary") and direct_val.strip():
-            decoded_payloads = [direct_val.strip()]
-
-    for i, payload in enumerate(decoded_payloads, start=1):
-        st.caption(f"Detected via: **{decode_method}**")
-        st.info(f"**Decoded QR #{i}:** `{payload}`")
-        analysis = analyze_any_qr_payload(payload, vt_api_key)
-        score = analysis["score"]
-        cat = analysis["category"]
-
-        st.session_state["last_scan_summary"] = f"QR Scan ({cat}) → Risk Score: {score}/100 | Payload: {payload[:80]}"
-
-        col_m1, col_m2 = st.columns(2)
-        col_m1.metric("QR Threat Risk Score", f"{score}/100")
-        col_m2.metric("Detected QR Type", cat)
-
-        if score >= 50:
-            st.error(f"🚨 FAKE / DANGEROUS {cat.upper()} DETECTED — Do NOT proceed!")
-        elif score >= 20:
-            st.warning(f"⚠️ CAUTION ({cat}) — Verify details carefully before trusting.")
+        urls = re.findall(r"(https?://[^\s]+|www\.[^\s]+)", raw)
+        if urls:
+            meta["Type"] = "Text with Embedded Link"
+            for u in urls[:2]:
+                u_rep = check_dns_and_url_intel(u, vt_api_key)
+                findings.extend(u_rep["flags"])
+                score += len(u_rep["flags"]) * 30
         else:
-            st.success(f"✅ SAFE / VERIFIED {cat.upper()}")
+            findings.append("Non-payment plain text QR code (Wi-Fi / vCard / Serial ID)")
 
-        if cat == "UPI Payment QR":
-            upi_rep = analysis["details"]
-            st.table([upi_rep["info"]])
-            for flg in upi_rep["flags"]:
-                st.warning(f"⚠️ {flg}")
-        elif cat == "Web Link / URL QR":
-            u_rep = analysis["url_rep"]
-            st.write(f"🌐 **Live DNS Status:** `{u_rep['dns_status']}` | **Root Domain:** `{u_rep['root_domain']}`")
-            for note in u_rep.get("safe_notes", []):
-                st.write(f"✅ {note}")
-            for flg in u_rep["flags"]:
-                st.warning(f"⚠️ {flg}")
-        else:
-            for flg in analysis.get("flags", []):
-                st.write(f"- {flg}")
+    return {"risk_score": min(score, 100), "findings": findings, "meta": meta}
 
 
-# =========================================================
-# TAB 2: SMS & PHISHING DETECTOR
-# =========================================================
-with tab_sms:
-    st.subheader("💬 SMS, WhatsApp & Phishing Detector (BERT AI + Live Internet Forensics)")
+# ==============================================================================
+# 3. MULTI-LAYER DEEPFAKE IMAGE & VIDEO FORENSICS
+# ==============================================================================
+def inspect_image_metadata_and_fft(pil_img: Image.Image) -> tuple:
+    signals = []
+    meta_score = 0.0
 
-    s1, s2, s3 = st.columns([1, 1, 2])
-    if s1.button("🧪 Load Fake Scam SMS"):
-        st.session_state["sms_box_v4"] = (
-            "URGENT: Your SBI YONO account will be suspended today due to incomplete PAN KYC. "
-            "Update immediately at http://sbi-kyc-verify-online.xyz/login or call 9876543210."
-        )
-    if s2.button("✅ Load Real Bank OTP"):
-        st.session_state["sms_box_v4"] = (
-            "482910 is your One Time Password (OTP) for transaction of Rs. 1,250.00 at Amazon Pay. "
-            "Valid for 5 mins. NEVER share this OTP with anyone. -HDFC Bank"
-        )
+    raw_info = str(pil_img.info).lower()
+    ai_markers = [
+        "c2pa", "jumbf", "midjourney", "dall-e", "stable diffusion",
+        "flux", "imagen", "firefly", "generative", "ai-generated",
+        "trainedalgorithmicmedia", "comfyui", "automatic1111",
+    ]
+    if any(m in raw_info for m in ai_markers):
+        meta_score += 65.0
+        signals.append("Embedded AI generator / C2PA cryptographic signature found in file headers")
 
-    sms_text = st.text_area(
-        "Paste any SMS, WhatsApp, or email message:",
-        key="sms_box_v4",
-        placeholder="Paste suspicious or legitimate text here...",
-        height=130,
-    )
+    exif = pil_img.getexif()
+    has_camera_exif = False
+    if exif:
+        tag_names = {ExifTags.TAGS.get(k, k) for k in exif.keys()}
+        if {"Make", "Model"} & tag_names:
+            has_camera_exif = True
+    if not has_camera_exif:
+        meta_score += 24.0
+        signals.append("No physical camera sensor EXIF metadata (Make/Model) present")
 
-    if st.button("🔍 Scan Message Authenticity", type="primary") and sms_text.strip():
-        bert_model = load_sms_phishing_model()
-        res = analyze_sms_full(sms_text, bert_model, vt_api_key)
+    gray = np.array(pil_img.convert("L"), dtype=np.float32)
+    f_shift = np.fft.fftshift(np.fft.fft2(gray))
+    mag = np.log1p(np.abs(f_shift))
+    h, w = mag.shape
+    cy, cx = h // 2, w // 2
+    r = max(8, min(h, w) // 6)
+    center_energy = float(np.mean(mag[cy - r:cy + r, cx - r:cx + r]))
+    outer_energy = float(np.mean(mag))
+    freq_ratio = outer_energy / (center_energy + 1e-6)
+    if freq_ratio > 0.62 or freq_ratio < 0.43:
+        meta_score += 20.0
+        signals.append(f"2D FFT frequency spectrum anomaly ({freq_ratio:.3f}) consistent with neural upsampling")
 
-        verdict = "FAKE / PHISHING SCAM" if res["risk_score"] >= 50 else ("SUSPICIOUS" if res["risk_score"] >= 25 else "SAFE / LEGITIMATE")
-        st.session_state["last_scan_summary"] = f"SMS Scan → {verdict} (Risk: {res['risk_score']}/100)"
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Overall Threat Score", f"{res['risk_score']}/100")
-        m2.metric("BERT Phishing Confidence", f"{res['phishing_prob']:.1f}%")
-        m3.metric("Links Inspected", len(res["url_reports"]))
-
-        if res["risk_score"] >= 50:
-            st.error("🚨 FAKE / PHISHING SMS DETECTED — Do NOT click links, call back, or share OTPs!")
-        elif res["risk_score"] >= 25:
-            st.warning("⚠️ SUSPICIOUS MESSAGE — Contains unverified links or urgency triggers.")
-        else:
-            st.success("✅ LEGITIMATE / SAFE MESSAGE — No phishing or scam triggers found.")
-
-        if res["reasons"]:
-            st.markdown("**Forensic Evidence:**")
-            for r in res["reasons"]:
-                st.write(f"- {r}")
-
-        if res["url_reports"]:
-            st.markdown("**Live Internet URL Analysis:**")
-            for u, rep, vt_res in res["url_reports"]:
-                st.write(
-                    f"🔗 `{u}` → Root Domain: `{rep['root_domain']}` | DNS: `{rep['dns_status']}` | Risk: **{rep['score']}/100**"
-                )
-                for note in rep.get("safe_notes", []):
-                    st.caption(f"  ✅ {note}")
-                for flg in rep["flags"]:
-                    st.caption(f"  ⚠️ {flg}")
+    return min(meta_score, 95.0), signals
 
 
-# =========================================================
-# TAB 3: DEDICATED WEBSITE & LINK SAFETY CHECKER
-# =========================================================
-with tab_url:
-    st.subheader("🌐 Live Website, Domain & Short-Link Safety Checker")
-    target_link = st.text_input(
-        "Enter any website URL or shortened link to inspect over the live internet:",
-        placeholder="e.g. https://bit.ly/3xyz... or https://www.sbi.co.in",
-    )
+def analyze_single_frame_forensics(pil_img: Image.Image, models: list) -> tuple:
+    rgb = np.array(pil_img.convert("RGB"))
+    crops = [("Full Frame", pil_img.convert("RGB"))]
 
-    if st.button("🔍 Inspect Link Live", type="primary") and target_link.strip():
-        u_rep = analyze_url_comprehensive(target_link.strip())
-        vt_res = vt_lookup_optional(target_link.strip(), vt_api_key, mode="url")
-        score = max(u_rep["score"], 100 if vt_res.get("malicious", 0) > 0 else 0)
+    try:
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(56, 56))
+        for idx, (x, y, w, h) in enumerate(faces[:2]):
+            pad = int(0.28 * max(w, h))
+            x1, y1 = max(0, x - pad), max(0, y - pad)
+            x2, y2 = min(rgb.shape[1], x + w + pad), min(rgb.shape[0], y + h + pad)
+            crops.append((f"Face Crop #{idx + 1}", Image.fromarray(rgb[y1:y2, x1:x2])))
+    except Exception:
+        pass
 
-        st.session_state["last_scan_summary"] = f"Website Check ({target_link.strip()}) → Risk: {score}/100 | DNS: {u_rep['dns_status']}"
+    ai_positive_tokens = {"fake", "ai", "artificial", "generated", "deepfake", "synthetic", "manipulated"}
+    model_scores = []
+    model_notes = []
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Link Threat Risk", f"{score}/100")
-        c2.metric("Root Domain", u_rep["root_domain"])
-        c3.metric("Live DNS Status", u_rep["dns_status"])
-
-        st.write(f"**Final Resolved Destination:** `{u_rep['final_url']}`")
-
-        if score >= 45:
-            st.error("🚨 DANGEROUS / PHISHING WEBSITE DETECTED — Do NOT enter passwords or card details!")
-        elif score >= 20:
-            st.warning("⚠️ UNVERIFIED / SUSPICIOUS LINK — Proceed with caution.")
-        else:
-            st.success("✅ WEBSITE APPEARS SAFE & VERIFIED")
-
-        for note in u_rep.get("safe_notes", []):
-            st.write(f"✅ {note}")
-        for flg in u_rep["flags"]:
-            st.warning(f"⚠️ {flg}")
-
-
-# =========================================================
-# TAB 4: DEEPFAKE IMAGE & VIDEO FORENSICS
-# =========================================================
-with tab_deepfake:
-    st.subheader("🎭 Deepfake Image & Video Forensics (Vision Transformer)")
-    media_file = st.file_uploader(
-        "Upload an Image or Video to scan for AI manipulation",
-        type=["jpg", "jpeg", "png", "webp", "mp4", "avi", "mov"],
-    )
-
-    if media_file and st.button("🔍 Scan Media for Deepfakes", type="primary"):
-        detector = load_image_deepfake_model()
-        ext = media_file.name.split(".")[-1].lower()
-
-        if ext in ("jpg", "jpeg", "png", "webp"):
-            img = Image.open(media_file).convert("RGB")
-            st.image(img, caption="Uploaded Image", width=320)
-
-            if detector is not None:
-                preds = detector(img)
-                scores = {p["label"].lower(): p["score"] for p in preds}
-                fake_prob = scores.get("fake", scores.get("deepfake", 0.0)) * 100
-            else:
-                gray_arr = np.array(img.convert("L"), dtype=np.float32)
-                lap_var = float(cv2.Laplacian(gray_arr, cv2.CV_64F).var())
-                fake_prob = 65.0 if lap_var < 35.0 else 18.0
-
-            st.session_state["last_scan_summary"] = f"Image Deepfake Scan ({media_file.name}) → AI Fake Score: {fake_prob:.1f}%"
-            st.metric("AI Manipulation Probability", f"{fake_prob:.2f}%")
-
-            if fake_prob >= 50:
-                st.error(f"🚨 DEEPFAKE / AI-GENERATED IMAGE DETECTED ({fake_prob:.2f}% confidence)")
-            else:
-                st.success(f"✅ AUTHENTIC PHOTOGRAPH ({100 - fake_prob:.2f}% real confidence)")
-        else:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-                tmp.write(media_file.read())
-                tmp_path = tmp.name
-
+    for model_name, clf in models:
+        short_name = model_name.split("/")[-1]
+        for crop_label, crop_img in crops:
             try:
-                cap = cv2.VideoCapture(tmp_path)
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                indices = np.linspace(0, max(0, total_frames - 1), num=min(10, max(1, total_frames)), dtype=int)
-                frame_scores = []
-                bar = st.progress(0)
-
-                for i, idx in enumerate(indices):
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-                    ok, frame = cap.read()
-                    if ok and detector is not None:
-                        rgb = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                        preds = detector(rgb)
-                        s_map = {p["label"].lower(): p["score"] for p in preds}
-                        frame_scores.append(s_map.get("fake", s_map.get("deepfake", 0.0)))
-                    bar.progress((i + 1) / len(indices))
-                cap.release()
-
-                if frame_scores:
-                    avg_fake = float(np.mean(frame_scores)) * 100
-                    peak_fake = float(np.max(frame_scores)) * 100
-                    st.session_state["last_scan_summary"] = f"Video Deepfake Scan ({media_file.name}) → Avg Fake: {avg_fake:.1f}%"
-                    if avg_fake >= 50 or peak_fake >= 80:
-                        st.error(f"🚨 DEEPFAKE VIDEO DETECTED — Avg: {avg_fake:.1f}% | Peak Frame: {peak_fake:.1f}%")
-                    else:
-                        st.success(f"✅ VIDEO APPEARS AUTHENTIC — Avg Fake Score: {avg_fake:.1f}%")
-                else:
-                    st.warning("Could not analyze frames from this video file.")
-            finally:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-
-
-# =========================================================
-# TAB 5: AI VOICE & CALL CLONE DETECTOR
-# =========================================================
-with tab_voice:
-    st.subheader("🎙️ Synthetic Voice & AI Call Clone Detector (Wav2Vec2)")
-    audio_file = st.file_uploader(
-        "Upload a voice note or call recording",
-        type=["wav", "mp3", "ogg", "flac", "m4a"],
-    )
-
-    if audio_file and st.button("🔍 Analyze Voice Authenticity", type="primary"):
-        audio_detector = load_audio_deepfake_model()
-        ext = audio_file.name.split(".")[-1].lower()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
-            tmp.write(audio_file.read())
-            tmp_audio = tmp.name
-
-        try:
-            st.audio(audio_file)
-            wav, sr = librosa.load(tmp_audio, sr=16000)
-            flatness = float(np.mean(librosa.feature.spectral_flatness(y=wav)))
-
-            if audio_detector is not None:
-                preds = audio_detector({"raw": wav, "sampling_rate": sr})
-                s_map = {p["label"].lower(): p["score"] for p in preds}
-                fake_score = s_map.get("fake", s_map.get("spoof", 0.0)) * 100
-            else:
-                fake_score = 60.0 if flatness < 0.002 else 20.0
-
-            st.session_state["last_scan_summary"] = f"Voice Scan ({audio_file.name}) → AI Clone Score: {fake_score:.1f}%"
-            c1, c2 = st.columns(2)
-            c1.metric("AI Voice Clone Probability", f"{fake_score:.2f}%")
-            c2.metric("Spectral Flatness", f"{flatness:.5f}")
-
-            if fake_score >= 50:
-                st.error("🚨 AI CLONED / SYNTHETIC VOICE DETECTED — Do NOT trust urgent money requests from this clip!")
-            else:
-                st.success("✅ NATURAL HUMAN VOICE VERIFIED")
-        except Exception as exc:
-            st.error(f"Could not process this audio format ({exc}). Try uploading a `.wav` or `.mp3` file.")
-        finally:
-            if os.path.exists(tmp_audio):
-                os.remove(tmp_audio)
-
-
-# =========================================================
-# TAB 6: MALWARE, APK & SUSPICIOUS FILE SCANNER
-# =========================================================
-with tab_malware:
-    st.subheader("🦠 Static Malware, APK & Binary Threat Analyzer")
-    suspect_file = st.file_uploader(
-        "Upload any file (.apk, .exe, .pdf, .zip, .ps1, .js, etc.) to scan before opening",
-    )
-
-    if suspect_file and st.button("🔍 Scan File for Malware", type="primary"):
-        raw_bytes = suspect_file.read()
-        rep = scan_binary_heuristics(raw_bytes, suspect_file.name)
-        vt_res = vt_lookup_optional(rep["sha256"], vt_api_key, mode="file")
-
-        final_risk = max(rep["risk_score"], 100 if vt_res.get("malicious", 0) > 0 else 0)
-        st.session_state["last_scan_summary"] = f"File Scan ({suspect_file.name}) → Risk: {final_risk}/100 | Entropy: {rep['entropy']:.2f}"
-
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Threat Risk Score", f"{final_risk}/100")
-        c2.metric("Shannon Entropy", f"{rep['entropy']:.2f} / 8.0")
-        c3.metric("File Size", f"{len(raw_bytes):,} B")
-        c4.metric(
-            "VirusTotal Hits",
-            f"{vt_res['malicious']}/{vt_res['total']}" if vt_res.get("status") == "found" else "Local Engine",
-        )
-
-        st.code(f"SHA-256: {rep['sha256']}", language="text")
-
-        if final_risk >= 50:
-            st.error("🚨 HIGH-RISK / MALICIOUS FILE DETECTED — Do NOT install or execute this file!")
-        elif final_risk >= 20:
-            st.warning("⚠️ MODERATE RISK — Review forensic findings carefully.")
-        else:
-            st.success("✅ NO STATIC MALWARE SIGNATURES DETECTED")
-
-        if rep["findings"]:
-            st.markdown("**Forensic Indicators:**")
-            for f in rep["findings"]:
-                st.write(f"- {f}")
-
-
-# =========================================================
-# TAB 7: LIVE NETWORK & PROCESS GUARD
-# =========================================================
-with tab_network:
-    st.subheader("📡 Live System Process & Internet Connection Guard")
-    if st.button("🔍 Audit Active Apps & Remote Server IPs", type="primary"):
-        suspicious_procs = []
-        connections = []
-        unique_ips = set()
-
-        for proc in psutil.process_iter(["pid", "name", "exe"]):
-            try:
-                p_name = proc.info.get("name") or "Unknown"
-                p_pid = proc.info.get("pid")
-                exe_path = (proc.info.get("exe") or "").lower()
-
-                if any(t in exe_path for t in ("\\temp\\", "/tmp/", "\\appdata\\local\\temp", "/private/tmp/")):
-                    suspicious_procs.append({"PID": p_pid, "Process": p_name, "Path": proc.info.get("exe")})
-
-                for conn in proc.net_connections(kind="inet"):
-                    if conn.status == "ESTABLISHED" and conn.raddr:
-                        r_ip = conn.raddr.ip
-                        r_port = conn.raddr.port
-                        unique_ips.add(r_ip)
-                        connections.append((p_name, p_pid, r_ip, r_port))
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                preds = clf(crop_img)
+                fake_prob = 0.0
+                for p in preds:
+                    lbl = p["label"].lower().strip()
+                    if lbl == "ai" or any(tok in lbl for tok in ai_positive_tokens):
+                        fake_prob = max(fake_prob, float(p["score"]) * 100.0)
+                model_scores.append(fake_prob)
+                if fake_prob >= 45.0:
+                    model_notes.append(f"{short_name} ({crop_label}): {fake_prob:.1f}% AI probability")
+            except Exception:
                 continue
 
-        ip_intel_map = {}
-        if unique_ips:
-            with st.spinner(f"Checking {len(unique_ips)} active remote IP(s) via live IP intelligence..."):
-                for ip in list(unique_ips)[:25]:
-                    ip_intel_map[ip] = lookup_ip_free_intel(ip)
+    neural_peak = max(model_scores) if model_scores else 0.0
+    heuristic_score, heuristic_signals = inspect_image_metadata_and_fft(pil_img)
 
-        rows = []
-        flagged_conns = 0
-        for p_name, p_pid, r_ip, r_port in connections:
-            intel = ip_intel_map.get(r_ip, {})
-            if intel.get("status") == "found":
-                is_proxy = intel.get("is_proxy", False)
-                if is_proxy:
-                    flagged_conns += 1
-                location = f"{intel['isp']} [{intel['country']}]"
-                net_type = "🚨 VPN/Proxy/Tor" if is_proxy else ("☁️ Cloud/Hosting" if intel["is_hosting"] else "Standard ISP")
-            elif intel.get("status") == "private":
-                location = "Local Network (Router/LAN)"
-                net_type = "Private IP"
+    if neural_peak >= 50.0:
+        combined = max(neural_peak, 0.80 * neural_peak + 0.25 * heuristic_score)
+    else:
+        combined = max(neural_peak, 0.55 * neural_peak + 0.65 * heuristic_score)
+
+    return min(round(combined, 2), 99.9), model_notes + heuristic_signals
+
+
+def analyze_video_forensics(video_bytes: bytes, filename: str, models: list) -> dict:
+    ext = os.path.splitext(filename)[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(video_bytes)
+        tmp_path = tmp.name
+
+    frame_scores = []
+    collected_signals = []
+    sampled_previews = []
+    temporal_diffs = []
+
+    try:
+        cap = cv2.VideoCapture(tmp_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames <= 0:
+            total_frames = 120
+
+        indices = np.linspace(0, max(0, total_frames - 1), num=min(16, max(1, total_frames)), dtype=int)
+        prev_gray = None
+
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            gray_small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (128, 128))
+            if prev_gray is not None:
+                diff = float(np.mean(np.abs(gray_small.astype(np.float32) - prev_gray.astype(np.float32))))
+                temporal_diffs.append(diff)
+            prev_gray = gray_small
+
+            pil_frame = Image.fromarray(rgb)
+            f_score, f_signals = analyze_single_frame_forensics(pil_frame, models)
+            frame_scores.append(f_score)
+            for s in f_signals:
+                if s not in collected_signals:
+                    collected_signals.append(s)
+            if len(sampled_previews) < 4:
+                sampled_previews.append((int(idx), f_score, pil_frame))
+
+        cap.release()
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    if not frame_scores:
+        return {"final_score": 0.0, "peak_score": 0.0, "frames_analyzed": 0, "signals": ["Could not decode video frames"], "previews": []}
+
+    top_k = sorted(frame_scores, reverse=True)[:4]
+    peak_mean = float(np.mean(top_k))
+    peak_max = float(max(frame_scores))
+
+    if temporal_diffs and float(np.std(temporal_diffs)) > 14.5:
+        peak_mean = min(99.9, peak_mean + 12.0)
+        collected_signals.append(f"High frame-to-frame temporal pixel jitter (std={np.std(temporal_diffs):.2f})")
+
+    final_score = max(peak_mean, 0.85 * peak_max)
+    return {
+        "final_score": round(min(final_score, 99.9), 2),
+        "peak_score": round(peak_max, 2),
+        "frames_analyzed": len(frame_scores),
+        "signals": collected_signals,
+        "previews": sampled_previews,
+    }
+
+
+# ==============================================================================
+# 4. DUAL-MODEL WAV2VEC2-XLSR AI VOICE CLONE DETECTOR (EXPLICIT ID2LABEL)
+# ==============================================================================
+def load_audio_mono_16k(audio_bytes: bytes, filename: str) -> tuple:
+    ext = os.path.splitext(filename)[1].lower() or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    try:
+        try:
+            import soundfile as sf
+            from scipy.signal import resample_poly
+            data, sr = sf.read(tmp_path, dtype="float32", always_2d=False)
+            if data.ndim > 1:
+                data = np.mean(data, axis=1)
+            if sr != 16000:
+                gcd = math.gcd(sr, 16000)
+                data = resample_poly(data, 16000 // gcd, sr // gcd).astype(np.float32)
+            return data, 16000
+        except Exception:
+            pass
+
+        import librosa
+        wav, sr = librosa.load(tmp_path, sr=16000, mono=True)
+        return wav.astype(np.float32), 16000
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def analyze_voice_clone_forensics(wav: np.ndarray, sr: int, models: list) -> dict:
+    import torch
+
+    signals = []
+    if wav is None or len(wav) < sr // 2:
+        return {"clone_score": 0.0, "duration_sec": 0.0, "flatness": 0.0, "hf_ratio": 0.0, "signals": ["Audio clip too short (< 0.5s)"]}
+
+    # Trim leading/trailing silence and normalize amplitude
+    peak_amp = float(np.max(np.abs(wav))) + 1e-8
+    wav_norm = wav / peak_amp
+    active_idx = np.where(np.abs(wav_norm) > 0.025)[0]
+    wav_speech = wav_norm[active_idx[0]:active_idx[-1]] if len(active_idx) > sr // 2 else wav_norm
+    duration_sec = round(len(wav_speech) / float(sr), 2)
+
+    # Vocoder DSP Forensics (High-frequency cutoff & spectral flatness)
+    fft_mag = np.abs(np.fft.rfft(wav_speech))
+    freqs = np.fft.rfftfreq(len(wav_speech), d=1.0 / sr)
+    total_energy = float(np.sum(fft_mag ** 2)) + 1e-9
+    hf_energy = float(np.sum(fft_mag[freqs >= 6200] ** 2))
+    hf_ratio = hf_energy / total_energy
+
+    frame_len, hop = 512, 256
+    frames = [wav_speech[i:i + frame_len] for i in range(0, max(1, len(wav_speech) - frame_len), hop)]
+    flatness_vals, rms_vals = [], []
+    for fr in frames[:400]:
+        if len(fr) < frame_len:
+            continue
+        spec = np.abs(np.fft.rfft(fr * np.hanning(frame_len))) + 1e-10
+        flatness_vals.append(float(np.exp(np.mean(np.log(spec))) / np.mean(spec)))
+        rms_vals.append(float(np.sqrt(np.mean(fr ** 2))))
+
+    flatness = float(np.mean(flatness_vals)) if flatness_vals else 0.0
+    rms_cv = (float(np.std(rms_vals)) / (float(np.mean(rms_vals)) + 1e-6)) if rms_vals else 1.0
+
+    dsp_score = 0.0
+    if hf_ratio < 0.0018:
+        dsp_score += 28.0
+        signals.append(f"Sharp high-frequency spectral roll-off above 6.2 kHz ({hf_ratio:.5f}) typical of neural TTS vocoders")
+    if flatness < 0.0032:
+        dsp_score += 24.0
+        signals.append(f"Unnaturally smooth harmonic spectral flatness ({flatness:.5f}) lacking natural vocal breath noise")
+    if rms_cv < 0.55:
+        dsp_score += 18.0
+        signals.append(f"Uniform synthetic syllable cadence (amplitude variation {rms_cv:.2f})")
+
+    # Slice speech into up to 4 overlapping 4.5-second segments (optimal window for Wav2Vec2)
+    win_size = int(sr * 4.5)
+    chunks = []
+    if len(wav_speech) <= win_size:
+        chunks.append(wav_speech)
+    else:
+        step = max(sr * 2, (len(wav_speech) - win_size) // 3)
+        for start in range(0, len(wav_speech) - win_size + 1, step):
+            chunks.append(wav_speech[start:start + win_size])
+            if len(chunks) >= 4:
+                break
+
+    neural_scores = []
+    for mid, extractor, model in models:
+        short_name = mid.split("/")[-1]
+        id2label = getattr(model.config, "id2label", {0: "real", 1: "fake"})
+        fake_idx = None
+        for idx_k, lbl_v in id2label.items():
+            lbl_low = str(lbl_v).lower()
+            if any(tok in lbl_low for tok in ("fake", "spoof", "ai", "synthetic", "generated")):
+                fake_idx = int(idx_k)
+                break
+        if fake_idx is None:
+            fake_idx = 1 if len(id2label) > 1 else 0
+
+        chunk_probs = []
+        for ch in chunks:
+            try:
+                inputs = extractor(ch, sampling_rate=sr, return_tensors="pt", padding=True)
+                with torch.no_grad():
+                    logits = model(**inputs).logits
+                    probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
+                fake_prob = float(probs[fake_idx]) * 100.0
+                chunk_probs.append(fake_prob)
+            except Exception:
+                continue
+
+        if chunk_probs:
+            peak_p = max(chunk_probs)
+            neural_scores.append(peak_p)
+            if peak_p >= 45.0:
+                signals.append(f"{short_name} flagged synthetic voice ({peak_p:.1f}% AI probability)")
+
+    if neural_scores:
+        peak_neural = max(neural_scores)
+        mean_neural = float(np.mean(neural_scores))
+        final_clone = max(peak_neural, 0.78 * peak_neural + 0.22 * mean_neural + 0.20 * dsp_score)
+    else:
+        final_clone = dsp_score
+        signals.append("Acoustic DSP fallback active (neural audio weights unavailable)")
+
+    return {
+        "clone_score": round(min(final_clone, 99.9), 2),
+        "duration_sec": duration_sec,
+        "flatness": round(flatness, 5),
+        "hf_ratio": round(hf_ratio, 5),
+        "signals": signals,
+    }
+
+
+# ==============================================================================
+# 5. SMS, WHATSAPP & DIGITAL ARREST FULL-MESSAGE ANALYZER
+# ==============================================================================
+def analyze_sms_and_whatsapp(text: str, vt_api_key: str = "") -> dict:
+    clf = load_phishing_pipeline()
+    ai_peak = 0.0
+
+    if clf is not None:
+        chunks = [text[i:i + 480] for i in range(0, len(text), 400)][:4]
+        for ch in chunks:
+            try:
+                out = clf(ch)[0]
+                lbl = out["label"].lower()
+                sc = float(out["score"]) * 100.0 if any(k in lbl for k in ("phish", "spam", "1")) else (1.0 - float(out["score"])) * 100.0
+                ai_peak = max(ai_peak, sc)
+            except Exception:
+                pass
+
+    scam_rules = [
+        (r"(digital arrest|cbi|ncb|enforcement directorate|\bed\b|cyber cell|narcotics|customs parcel|fedex|dhl.*parcel|trai.*disconnect|sim.*block)", 50, "Impersonates Police / CBI / TRAI / Customs ('Digital Arrest' or parcel extortion scam)"),
+        (r"(electricity.*disconnect|power.*cut|bijli.*kat|bescom|mahavitaran|uppcl|water.*disconnect|gas.*connection)", 45, "Fake utility bill disconnection urgency scam"),
+        (r"(kyc.*update|kyc.*expire|pan.*card.*block|aadhaar.*suspend|account.*block|account.*freeze|sbi.*yono|hdfc.*kyc|icici.*kyc)", 45, "Fake Bank KYC / PAN / Aadhaar account suspension lure"),
+        (r"(traffic.*challan|parivahan|echallan|e-challan|rto.*challan|\.apk)", 50, "Fake RTO Traffic e-Challan APK banking Trojan lure"),
+        (r"(part.?time job|work from home|ghar baithe|telegram.*task|youtube.*like|prepaid.*task|daily.*income|earning.*app)", 45, "Telegram / WhatsApp prepaid task & fake job investment scam"),
+        (r"(lottery|kbc|kaun banega|prize.*money|winner|cashback.*won|claim.*reward|gift.*voucher)", 45, "Fake lottery / KBC / reward claim scam"),
+        (r"(share.*otp|otp.*bhejo|cvv|upi.*pin|anydesk|teamviewer|rustdesk|quicksupport|screen.*share)", 60, "Requests secret OTP/PIN or remote screen-sharing app takeover"),
+        (r"(loan.*approved|instant.*loan|cibil|harassment|morphed.*photo|nude.*video|sextortion)", 45, "Predatory instant loan / extortion threat indicators"),
+    ]
+
+    rule_score = 0
+    reasons = []
+    for pat, weight, desc in scam_rules:
+        if re.search(pat, text, re.IGNORECASE):
+            rule_score += weight
+            reasons.append(desc)
+
+    cleaned_for_urls = re.sub(r"hxxps?://", "https://", text, flags=re.IGNORECASE)
+    urls = list(dict.fromkeys(re.findall(r"(https?://[^\s<>\"']+|www\.[^\s<>\"']+)", cleaned_for_urls)))
+    url_reports = []
+    for u in urls[:4]:
+        rep = check_dns_and_url_intel(u, vt_api_key)
+        url_reports.append(rep)
+        if rep["flags"]:
+            rule_score += len(rep["flags"]) * 28
+            reasons.extend([f"Link ({u}): {flg}" for flg in rep["flags"]])
+
+    upi_ids = list(dict.fromkeys(re.findall(r"\b[a-zA-Z0-9.\-_]{2,64}@[a-zA-Z]{2,32}\b", text)))
+    upi_ids = [u for u in upi_ids if not u.lower().endswith((".com", ".in", ".org", ".net", ".gov", ".co"))]
+    phones = list(dict.fromkeys(re.findall(r"(?:\+91[\-\s]?)?[6-9]\d{9}\b", text)))
+
+    if upi_ids and rule_score > 0:
+        reasons.append(f"Suspicious UPI handle(s) in message: {', '.join(upi_ids)}")
+    if phones and rule_score > 0:
+        reasons.append(f"Scammer mobile number(s) detected (report on Sanchar Saathi Chakshu): {', '.join(phones)}")
+
+    final_risk = min(100.0, max(ai_peak, 0.50 * ai_peak + 0.80 * rule_score))
+    return {
+        "risk_score": round(final_risk, 1),
+        "ai_score": round(ai_peak, 1),
+        "rule_score": min(100, rule_score),
+        "reasons": reasons,
+        "urls": url_reports,
+        "upi_ids": upi_ids,
+        "phones": phones,
+    }
+
+
+# ==============================================================================
+# 6. UNIVERSAL VIRUS, APK, PDF, DOCX, ZIP & BINARY MALWARE SCANNER
+# ==============================================================================
+def calculate_shannon_entropy(data: bytes) -> float:
+    if not data:
+        return 0.0
+    arr = np.frombuffer(data, dtype=np.uint8)
+    counts = np.bincount(arr, minlength=256)
+    probs = counts[counts > 0] / len(arr)
+    return float(-np.sum(probs * np.log2(probs)))
+
+
+def inspect_raw_buffer_heuristics(buf: bytes, name: str) -> tuple:
+    score = 0
+    threats = []
+    ext = os.path.splitext(name)[1].lower()
+    header = buf[:32]
+
+    if header.startswith(b"MZ") and ext not in (".exe", ".dll", ".scr", ".sys", ".msi", ".com"):
+        score += 80
+        threats.append(f"[{name}] Windows PE Executable (MZ header) disguised as '{ext}'")
+    if header.startswith(b"\x7fELF") and ext in (".pdf", ".jpg", ".jpeg", ".png", ".mp4", ".doc", ".docx", ".txt"):
+        score += 80
+        threats.append(f"[{name}] Linux ELF binary disguised as '{ext}'")
+    if re.search(r"\.(pdf|jpg|jpeg|png|doc|docx|xls|xlsx|mp4|txt)\.(exe|apk|bat|cmd|scr|vbs|js|ps1|jar)$", name.lower()):
+        score += 85
+        threats.append(f"[{name}] Double-extension social engineering trap detected")
+
+    if ext == ".pdf" or header.startswith(b"%PDF"):
+        pdf_triggers = [
+            (rb"/JavaScript\b|/JS\b", 45, "PDF contains embedded JavaScript code"),
+            (rb"/OpenAction\b|/AA\b", 35, "PDF executes automatic actions immediately when opened"),
+            (rb"/Launch\b", 65, "PDF attempts to launch external system commands (/Launch)"),
+            (rb"/EmbeddedFile\b", 30, "PDF hides an embedded file attachment inside its stream"),
+            (rb"/RichMedia\b|/JBIG2Decode\b", 30, "PDF uses high-risk exploit stream (/JBIG2Decode or /RichMedia)"),
+        ]
+        for pat, pts, desc in pdf_triggers:
+            if re.search(pat, buf):
+                score += pts
+                threats.append(f"[{name}] {desc}")
+
+    if ext in (".doc", ".docx", ".docm", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx", ".rtf"):
+        if b"vbaProject.bin" in buf or re.search(rb"(AutoOpen|Document_Open|Workbook_Open|Auto_Open)", buf, re.IGNORECASE):
+            score += 65
+            threats.append(f"[{name}] Contains auto-executing VBA Macro payload (vbaProject.bin / AutoOpen)")
+        if b'TargetMode="External"' in buf and (b"http://" in buf or b"https://" in buf or b"file://" in buf):
+            score += 55
+            threats.append(f"[{name}] Remote template injection link detected inside Office XML relationships")
+        if b"oleObject" in buf or b"Equation.3" in buf:
+            score += 50
+            threats.append(f"[{name}] Embedded OLE / Equation Editor exploit object detected")
+
+    if ext == ".apk" or (header.startswith(b"PK\x03\x04") and b"AndroidManifest.xml" in buf[:8192]):
+        dangerous_apk_perms = {
+            b"BIND_ACCESSIBILITY_SERVICE": "Requests Accessibility Service takeover (allows Trojan to read screen & click buttons automatically)",
+            b"RECEIVE_SMS": "Intercepts incoming bank OTPs and SMS alerts (RECEIVE_SMS)",
+            b"READ_SMS": "Reads private SMS inbox & financial messages (READ_SMS)",
+            b"SEND_SMS": "Silently sends SMS messages from victim's SIM (SEND_SMS)",
+            b"SYSTEM_ALERT_WINDOW": "Draws fake login overlays on top of UPI & banking apps (SYSTEM_ALERT_WINDOW)",
+            b"REQUEST_INSTALL_PACKAGES": "Dropper capability to silently install hidden secondary APKs",
+            b"READ_CALL_LOG": "Harvests call logs for extortion scams",
+            b"RECORD_AUDIO": "Background microphone spying capability",
+        }
+        apk_hits = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(buf), "r") as zf:
+                names = zf.namelist()
+                if "AndroidManifest.xml" in names:
+                    manifest_raw = zf.read("AndroidManifest.xml")
+                    for perm_b, desc in dangerous_apk_perms.items():
+                        if perm_b in manifest_raw:
+                            apk_hits.append(desc)
+                for dex_name in [n for n in names if n.endswith(".dex")][:4]:
+                    dex_data = zf.read(dex_name)
+                    if b"SmsManager" in dex_data or b"getDefaultSmsPackage" in dex_data:
+                        apk_hits.append("Contains programmatic SMS forwarding/hijacking code (SmsManager)")
+                    if b"DexClassLoader" in dex_data or b"InMemoryDexClassLoader" in dex_data:
+                        apk_hits.append("Loads encrypted malware payloads dynamically at runtime (DexClassLoader)")
+                    if b"MediaProjection" in dex_data:
+                        apk_hits.append("Contains live screen-recording spyware API (MediaProjection)")
+        except Exception:
+            for perm_b, desc in dangerous_apk_perms.items():
+                if perm_b in buf:
+                    apk_hits.append(desc)
+
+        if apk_hits:
+            unique_apk = list(dict.fromkeys(apk_hits))
+            score += min(90, len(unique_apk) * 24)
+            threats.extend([f"[{name}] {h}" for h in unique_apk])
+
+    generic_sigs = [
+        (rb"powershell(\.exe)?\s+.*-(enc|encodedcommand|w\s+hidden|nop)", 55, "Obfuscated hidden PowerShell command execution"),
+        (rb"(cmd\.exe\s*/c|/bin/sh\s+-i|/bin/bash\s+-i|nc\s+-e|bash\s+-i\s+>&\s+/dev/tcp)", 60, "Interactive reverse-shell backdoor command"),
+        (rb"(VirtualAlloc|VirtualProtect|WriteProcessMemory|CreateRemoteThread|NtUnmapViewOfSection)", 50, "Windows process hollowing / memory injection APIs"),
+        (rb"(SetWindowsHookEx|GetAsyncKeyState|GetKeyState)", 45, "Keylogger keystroke-capture APIs"),
+        (rb"(vssadmin(\.exe)?\s+delete\s+shadows|wbadmin\s+delete\s+catalog|bcdedit.*recoveryenabled\s+no)", 75, "Ransomware shadow-copy & recovery deletion command"),
+        (rb"(WScript\.Shell|CreateObject\(\"Scripting\.FileSystemObject\"\)|ShellExecute)", 45, "Malicious VBScript/JScript system execution call"),
+        (rb"(eval\(base64_decode|exec\(base64\.b64decode|marshal\.loads\(zlib\.decompress)", 45, "Multi-layer encoded script payload execution"),
+    ]
+    for pat, pts, desc in generic_sigs:
+        if re.search(pat, buf, re.IGNORECASE):
+            score += pts
+            threats.append(f"[{name}] {desc}")
+
+    entropy = calculate_shannon_entropy(buf)
+    already_compressed = (".zip", ".gz", ".7z", ".rar", ".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mp3", ".m4a", ".pdf", ".apk", ".docx", ".xlsx", ".pptx")
+    if entropy > 7.45 and ext not in already_compressed:
+        score += 35
+        threats.append(f"[{name}] High Shannon entropy ({entropy:.2f}/8.0) indicates encrypted/packed malware binary")
+
+    return min(score, 100), threats, entropy
+
+
+def scan_file_for_viruses(file_bytes: bytes, filename: str, vt_api_key: str = "") -> dict:
+    md5_h = hashlib.md5(file_bytes).hexdigest()
+    sha1_h = hashlib.sha1(file_bytes).hexdigest()
+    sha256_h = hashlib.sha256(file_bytes).hexdigest()
+    ext = os.path.splitext(filename)[1].lower()
+
+    total_risk, threats, root_entropy = inspect_raw_buffer_heuristics(file_bytes, filename)
+    vt_report = None
+    mb_report = None
+    archive_files_scanned = 1
+
+    if ext == ".zip" and file_bytes[:4] == b"PK\x03\x04":
+        try:
+            with zipfile.ZipFile(io.BytesIO(file_bytes), "r") as zf:
+                inner_names = [n for n in zf.namelist() if not n.endswith("/")][:20]
+                archive_files_scanned = len(inner_names)
+                for inner_name in inner_names:
+                    try:
+                        inner_bytes = zf.read(inner_name)
+                        if len(inner_bytes) > 25 * 1024 * 1024:
+                            continue
+                        sub_risk, sub_threats, _ = inspect_raw_buffer_heuristics(inner_bytes, f"{filename} -> {inner_name}")
+                        total_risk = max(total_risk, sub_risk)
+                        threats.extend(sub_threats)
+                    except RuntimeError:
+                        total_risk = max(total_risk, 55)
+                        threats.append(f"[{filename} -> {inner_name}] Password-encrypted ZIP archive (frequently used to evade antivirus scanners)")
+                        break
+        except Exception:
+            pass
+
+    if vt_api_key.strip():
+        try:
+            resp = requests.get(
+                f"https://www.virustotal.com/api/v3/files/{sha256_h}",
+                headers={"x-apikey": vt_api_key.strip()},
+                timeout=4.0,
+            )
+            if resp.status_code == 200:
+                attrs = resp.json()["data"]["attributes"]
+                stats = attrs.get("last_analysis_stats", {})
+                mal = int(stats.get("malicious", 0))
+                susp = int(stats.get("suspicious", 0))
+                tot = sum(int(v) for v in stats.values())
+                vt_report = {"malicious": mal, "suspicious": susp, "total": tot}
+                if mal > 0:
+                    total_risk = max(total_risk, min(100, 65 + mal * 5))
+                    threats.insert(0, f"CRITICAL: VirusTotal flagged this file as MALICIOUS by {mal}/{tot} antivirus engines!")
+                elif susp > 0:
+                    total_risk = max(total_risk, 45)
+                    threats.insert(0, f"VirusTotal flagged suspicious behavior in {susp}/{tot} engines")
+        except Exception:
+            pass
+
+    try:
+        mb = requests.post(
+            "https://mb-api.abuse.ch/api/v1/",
+            data={"query": "get_info", "hash": sha256_h},
+            timeout=3.5,
+        ).json()
+        if mb.get("query_status") == "ok" and mb.get("data"):
+            item = mb["data"][0]
+            sig = item.get("signature") or "Confirmed Malware"
+            mb_report = {"signature": sig}
+            total_risk = 100
+            threats.insert(0, f"CONFIRMED VIRUS / TROJAN: Exact SHA-256 match in Abuse.ch MalwareBazaar ({sig})")
+    except Exception:
+        pass
+
+    return {
+        "filename": filename,
+        "size_kb": round(len(file_bytes) / 1024.0, 2),
+        "md5": md5_h,
+        "sha1": sha1_h,
+        "sha256": sha256_h,
+        "entropy": round(root_entropy, 3),
+        "files_inspected": archive_files_scanned,
+        "risk_score": min(total_risk, 100),
+        "threats": list(dict.fromkeys(threats)),
+        "vt_report": vt_report,
+        "mb_report": mb_report,
+    }
+
+
+# ==============================================================================
+# 7. LIVE NETWORK, SOCKET & THREAT REPUTATION AUDITOR
+# ==============================================================================
+def lookup_ip_reputation(ip: str, abuse_key: str = "") -> dict:
+    info = {"ip": ip, "hostname": "-", "country": "Unknown", "isp": "Unknown", "abuse_score": 0}
+    try:
+        info["hostname"] = socket.gethostbyaddr(ip)[0]
+    except Exception:
+        pass
+
+    try:
+        geo = requests.get(f"http://ip-api.com/json/{ip}?fields=status,country,isp", timeout=2.0).json()
+        if geo.get("status") == "success":
+            info["country"] = geo.get("country", "Unknown")
+            info["isp"] = geo.get("isp", "Unknown")
+    except Exception:
+        pass
+
+    if abuse_key.strip():
+        try:
+            ab = requests.get(
+                "https://api.abuseipdb.com/api/v2/check",
+                headers={"Key": abuse_key.strip(), "Accept": "application/json"},
+                params={"ipAddress": ip, "maxAgeInDays": "90"},
+                timeout=2.5,
+            ).json()
+            info["abuse_score"] = int(ab.get("data", {}).get("abuseConfidenceScore", 0))
+        except Exception:
+            pass
+    return info
+
+
+# ==============================================================================
+# 8. UNIVERSAL AI AGENT (ANSWERS ANY QUESTION — CYBERCRIME OR GENERAL KNOWLEDGE)
+# ==============================================================================
+def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", gemini_key: str = "", last_scan: str = "") -> str:
+    """Answers ANY question (cybersecurity or general) via Groq/Gemini LLM or free live Wikipedia/DuckDuckGo fallback."""
+    system_prompt = (
+        "You are AegisAI Sahayak, an authoritative, helpful, and accurate AI assistant built into India's Citizen Cyber Defense Portal. "
+        "You can answer ANY question — whether about cybersecurity, Indian cyber laws (IT Act 2000, BNS, 1930 helpline), science, coding, "
+        "history, education, or everyday topics. When relevant to cyber fraud in India, remind citizens of helpline 1930 and cybercrime.gov.in. "
+        f"Latest scan context in user's session: {last_scan or 'None'}."
+    )
+
+    # 1. Groq Llama-3.3-70B (Ultra-fast free API if key provided)
+    if groq_key.strip():
+        try:
+            msgs = [{"role": "system", "content": system_prompt}]
+            for m in chat_history[-6:]:
+                msgs.append({"role": m["role"], "content": m["content"]})
+            msgs.append({"role": "user", "content": prompt})
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key.strip()}", "Content-Type": "application/json"},
+                json={"model": "llama-3.3-70b-versatile", "messages": msgs, "temperature": 0.4, "max_tokens": 900},
+                timeout=12.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()["choices"][0]["message"]["content"]
+        except Exception:
+            pass
+
+    # 2. Google Gemini API (Free tier if key provided)
+    if gemini_key.strip():
+        try:
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key.strip()}",
+                headers={"Content-Type": "application/json"},
+                json={"contents": [{"parts": [{"text": f"{system_prompt}\n\nUser Question: {prompt}"}]}]},
+                timeout=12.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception:
+            pass
+
+    # 3. Built-in Zero-Key Knowledge & Cyber Incident Engine (Always works without API keys)
+    q_low = prompt.lower().strip()
+
+    # Check high-priority Indian cybercrime emergency topics first
+    if any(w in q_low for w in ["apk", "installed", "virus", "hacked", "screen share", "anydesk", "teamviewer"]):
+        return (
+            "### 🚨 Emergency Steps If You Installed a Malicious APK or Screen-Sharing App\n"
+            "1. **Turn on Airplane Mode immediately** (disconnect mobile data & Wi-Fi) so the Trojan cannot forward bank OTPs.\n"
+            "2. Go to **Settings → Apps**, locate the unknown app (*RTO Challan, PM Kisan, Customer Support, etc.*), and **Uninstall** it (if blocked, disable it under *Settings → Accessibility* or *Device Admin Apps* first).\n"
+            "3. Call your bank's official helpline from another phone to temporarily freeze UPI/net-banking.\n"
+            "4. If any money was debited, call **`1930`** or report at **[cybercrime.gov.in](https://cybercrime.gov.in)** immediately."
+        )
+    if any(w in q_low for w in ["digital arrest", "cbi", "ncb", "customs", "trai", "parcel", "enforcement directorate"]):
+        return (
+            "### 🚨 'Digital Arrest' Is 100% a Cyber Scam\n"
+            "- **Indian Police, CBI, ED, RBI, Customs, or TRAI NEVER conduct interrogations or arrests on WhatsApp/Skype video calls.**\n"
+            "- Hang up immediately and never transfer money to any 'RBI verification account'.\n"
+            "- Report the caller's number on **Sanchar Saathi (Chakshu)** at `sancharsaathi.gov.in` and dial **`1930`**."
+        )
+    if any(w in q_low for w in ["upi", "debited", "fraud", "scam", "utr", "1930", "refund"]):
+        return (
+            "### 🚨 Golden Hour UPI / Bank Fraud Recovery Protocol\n"
+            "1. **Dial `1930` immediately** (24×7 National Cyber Crime Helpline) with your **12-digit UPI UTR / Transaction Reference Number**.\n"
+            "2. File a formal complaint online at **[cybercrime.gov.in](https://cybercrime.gov.in)** under *Report Cyber Crime → Financial Fraud*.\n"
+            "3. Submit the acknowledgement number to your bank branch within 24 hours."
+        )
+
+    # General Knowledge Live Lookup via DuckDuckGo Instant Answer + Wikipedia REST API
+    clean_topic = re.sub(r"^(what is|who is|tell me about|explain|define|how does|what are)\s+", "", q_low).strip(" ?.!")
+    try:
+        ddg = requests.get(
+            "https://api.duckduckgo.com/",
+            params={"q": prompt, "format": "json", "no_html": 1, "skip_disambig": 1},
+            timeout=4.0,
+        ).json()
+        abstract = ddg.get("AbstractText") or ddg.get("Answer")
+        if abstract:
+            src = ddg.get("AbstractURL", "")
+            return f"{abstract}\n\n*(Source: {src})*" if src else abstract
+    except Exception:
+        pass
+
+    try:
+        search_resp = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action": "opensearch", "search": clean_topic or prompt, "limit": 1, "format": "json"},
+            headers={"User-Agent": "AegisAI-CitizenPortal/5.2"},
+            timeout=4.0,
+        ).json()
+        if len(search_resp) >= 4 and search_resp[1]:
+            title = search_resp[1][0]
+            summary_resp = requests.get(
+                f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(title)}",
+                headers={"User-Agent": "AegisAI-CitizenPortal/5.2"},
+                timeout=4.0,
+            ).json()
+            extract = summary_resp.get("extract")
+            page_url = summary_resp.get("content_urls", {}).get("desktop", {}).get("page", "")
+            if extract:
+                return f"**{title}**\n\n{extract}\n\n*(Reference: {page_url})*"
+    except Exception:
+        pass
+
+    return (
+        f"I searched my built-in knowledge base for **\"{prompt}\"**, and to give you full conversational AI answers on every complex topic, "
+        "you can paste a free **Groq API Key** (`console.groq.com`) or **Google Gemini API Key** (`aistudio.google.com`) in the left sidebar under **AI Agent Keys**.\n\n"
+        f"**Current Session Context:** `{last_scan or 'Ready for scan'}`"
+    )
+
+
+# ==============================================================================
+# SIDEBAR & PORTAL HEADER
+# ==============================================================================
+with st.sidebar:
+    st.markdown("### 🛡️ AegisAI CyberCommand")
+    st.caption("Citizen Cyber Defense & AI Forensics Suite")
+
+    st.error("**🇮🇳 National Cyber Helpline: `1930`**\n\nReport Online: **cybercrime.gov.in**\n\nReport Scam Calls/SMS: **sancharsaathi.gov.in**")
+
+    st.markdown("#### 🤖 Universal AI Agent Keys (Free)")
+    groq_api_key = st.text_input(
+        "Groq API Key (Llama-3.3-70B — Free)",
+        value=os.getenv("GROQ_API_KEY", ""),
+        type="password",
+        help="Optional free key from console.groq.com enables full conversational AI answers on any topic.",
+    )
+    gemini_api_key = st.text_input(
+        "Google Gemini API Key (Free)",
+        value=os.getenv("GEMINI_API_KEY", ""),
+        type="password",
+        help="Optional free key from aistudio.google.com.",
+    )
+
+    st.markdown("#### 🔑 Virus & IP Threat Keys (Optional)")
+    vt_api_key = st.text_input(
+        "VirusTotal API v3 Key (70+ AV Engines)",
+        value=os.getenv("VIRUSTOTAL_API_KEY", ""),
+        type="password",
+    )
+    abuse_api_key = st.text_input(
+        "AbuseIPDB API Key (IP Threat Score)",
+        value=os.getenv("ABUSEIPDB_API_KEY", ""),
+        type="password",
+    )
+
+st.markdown(
+    """
+    <div class="main-banner">
+        <h2 style="margin:0;">🛡️ AegisAI CyberCommand — Citizen Cybercrime & Virus Defense Portal</h2>
+        <p style="margin:6px 0 0 0; opacity:0.9;">
+            Multi-Modal AI Forensics for UPI/QR Fraud • Digital Arrest & WhatsApp Scams • Deepfake Videos & Voice Clones • APK/PDF/ZIP Virus Scanning
+        </p>
+    </div>
+    <div class="helpline-strip">
+        <strong>🚨 Emergency Golden Hour Alert:</strong> Lost money in a UPI or cyber scam? Dial <strong>1930</strong> immediately with your 12-digit UTR number or file an urgent complaint at <strong>cybercrime.gov.in</strong>.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ==============================================================================
+# 8-TAB CYBER DEFENSE WORKSPACE
+# ==============================================================================
+tab_qr, tab_sms, tab_df, tab_voice, tab_virus, tab_net, tab_ai, tab_guide = st.tabs([
+    "📱 UPI & QR Scam Guard",
+    "📩 SMS & WhatsApp Shield",
+    "🎭 Deepfake Image & Video",
+    "🎙️ AI Voice Clone Detector",
+    "🦠 Virus, APK & Doc Scanner",
+    "🌐 Live Network Guard",
+    "🤖 Universal AI Agent",
+    "🇮🇳 Citizen Action Guide",
+])
+
+# ------------------------------------------------------------------------------
+# TAB 1: UPI & QR SCAM GUARD
+# ------------------------------------------------------------------------------
+with tab_qr:
+    st.subheader("📱 8-Pass UPI Payment & Malicious QR Code Scanner")
+    st.write("Upload a screenshot or photo of any QR code before scanning it with GPay, PhonePe, Paytm, or BHIM.")
+
+    c_q1, c_q2 = st.columns(2)
+    with c_q1:
+        qr_img_file = st.file_uploader("Upload QR Screenshot or Photo", type=["png", "jpg", "jpeg", "webp"], key="qr_up")
+        raw_qr_input = st.text_input("Or paste UPI string / QR link directly:", placeholder="upi://collect?pa=refund@ybl&pn=CustomerCare&am=4999")
+    with c_q2:
+        qr_cam = st.camera_input("Or scan live using Camera", key="qr_cam")
+
+    active_qr_img = qr_img_file or qr_cam
+    if st.button("🔍 Scan & Audit QR Code", type="primary", key="run_qr"):
+        decoded_list = []
+        if active_qr_img is not None:
+            decoded_list.extend(decode_qr_multipass(Image.open(active_qr_img)))
+        if raw_qr_input.strip() and raw_qr_input.strip() not in decoded_list:
+            decoded_list.append(raw_qr_input.strip())
+
+        if not decoded_list:
+            st.error("No QR code could be decoded. Ensure the full square QR code is visible without glare.")
+        else:
+            for payload in decoded_list:
+                audit = audit_upi_or_qr_payload(payload, vt_api_key)
+                st.session_state["last_scan"] = f"QR/UPI Scan -> Risk {audit['risk_score']}/100"
+
+                m1, m2 = st.columns([1, 2])
+                m1.metric("QR Fraud Risk Score", f"{audit['risk_score']} / 100")
+                m2.code(payload, language="text")
+
+                if audit["risk_score"] >= 60:
+                    st.markdown("<div class='verdict-danger'><strong>🚨 HIGH DANGER — DO NOT SCAN OR ENTER YOUR UPI PIN</strong></div>", unsafe_allow_html=True)
+                elif audit["risk_score"] >= 25:
+                    st.markdown("<div class='verdict-warn'><strong>⚠️ CAUTION — VERIFY PAYEE IDENTITY & AMOUNT BEFORE PAYING</strong></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown("<div class='verdict-safe'><strong>✅ VERIFIED STRUCTURE — NO KNOWN FRAUD INDICATORS</strong></div>", unsafe_allow_html=True)
+
+                st.json(audit["meta"])
+                for f in audit["findings"]:
+                    st.write(f"- {f}")
+
+# ------------------------------------------------------------------------------
+# TAB 2: SMS & WHATSAPP SCAM SHIELD
+# ------------------------------------------------------------------------------
+with tab_sms:
+    st.subheader("📩 SMS, WhatsApp & 'Digital Arrest' Scam Detector")
+    msg_input = st.text_area(
+        "Paste the suspicious SMS, WhatsApp forward, or job/challan alert:",
+        height=150,
+        placeholder="Paste full SMS or WhatsApp message here...",
+    )
+
+    if st.button("🛡️ Scan Message & Links", type="primary", key="run_sms"):
+        if not msg_input.strip():
+            st.warning("Please paste a message first.")
+        else:
+            with st.spinner("Running BERT transformer + Indian cybercrime rules + live DNS/URLhaus checks..."):
+                s_res = analyze_sms_and_whatsapp(msg_input, vt_api_key)
+
+            st.session_state["last_scan"] = f"SMS/WhatsApp Scan -> Risk {s_res['risk_score']}%"
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Overall Scam Risk", f"{s_res['risk_score']}%")
+            c2.metric("AI Classifier Score", f"{s_res['ai_score']}%")
+            c3.metric("Links Extracted", len(s_res["urls"]))
+
+            if s_res["risk_score"] >= 60:
+                st.markdown("<div class='verdict-danger'><strong>🚨 SCAM / PHISHING ALERT — DO NOT CLICK LINKS, CALL BACK, OR SHARE OTP</strong></div>", unsafe_allow_html=True)
+            elif s_res["risk_score"] >= 30:
+                st.markdown("<div class='verdict-warn'><strong>⚠️ SUSPICIOUS MESSAGE — VERIFY THROUGH OFFICIAL APP OR 1930</strong></div>", unsafe_allow_html=True)
             else:
-                location = "External Server"
-                net_type = "Public IP"
+                st.markdown("<div class='verdict-safe'><strong>✅ LOW PHISHING RISK</strong></div>", unsafe_allow_html=True)
 
-            rows.append(
-                {
-                    "Application": p_name,
-                    "PID": p_pid,
-                    "Remote IP:Port": f"{r_ip}:{r_port}",
-                    "Provider / Country": location,
-                    "Classification": net_type,
-                }
+            for r in s_res["reasons"]:
+                st.write(f"- {r}")
+
+            if s_res["urls"]:
+                st.markdown("**Extracted URL Live Intelligence:**")
+                for u_info in s_res["urls"]:
+                    st.write(f"- `{u_info['normalized_url']}` → DNS Valid: **{u_info['dns_valid']}** | IPs: `{', '.join(u_info['resolved_ips']) or 'None'}`")
+
+# ------------------------------------------------------------------------------
+# TAB 3: MULTI-LAYER DEEPFAKE IMAGE & VIDEO FORENSICS
+# ------------------------------------------------------------------------------
+with tab_df:
+    st.subheader("🎭 Deepfake & AI-Generated Media Forensics (Images & Videos)")
+    df_file = st.file_uploader(
+        "Upload suspicious photo or video",
+        type=["jpg", "jpeg", "png", "webp", "mp4", "mov", "avi", "mkv"],
+        key="df_up",
+    )
+
+    if df_file is not None and st.button("🔬 Run Deepfake Forensics", type="primary", key="run_df"):
+        models = load_deepfake_pipeline()
+        ext = os.path.splitext(df_file.name)[1].lower()
+
+        if ext in (".mp4", ".mov", ".avi", ".mkv"):
+            with st.spinner("Sampling 16 video frames, extracting faces & running FFT/neural forensics..."):
+                v_res = analyze_video_forensics(df_file.read(), df_file.name, models)
+
+            score = v_res["final_score"]
+            st.session_state["last_scan"] = f"Video Deepfake Scan ({df_file.name}) -> {score:.1f}% AI"
+            c1, c2, c3 = st.columns(3)
+            c1.metric("AI / Deepfake Probability", f"{score:.2f}%")
+            c2.metric("Peak Frame Score", f"{v_res['peak_score']:.2f}%")
+            c3.metric("Frames Audited", v_res["frames_analyzed"])
+
+            if score >= 55.0:
+                st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-GENERATED / DEEPFAKE VIDEO DETECTED ({score:.1f}% confidence)</strong></div>", unsafe_allow_html=True)
+            elif score >= 30.0:
+                st.markdown(f"<div class='verdict-warn'><strong>⚠️ SUSPICIOUS SYNTHETIC ARTIFACTS DETECTED ({score:.1f}%)</strong></div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='verdict-safe'><strong>✅ LIKELY AUTHENTIC CAMERA FOOTAGE ({100 - score:.1f}% real confidence)</strong></div>", unsafe_allow_html=True)
+
+            for sig in v_res["signals"]:
+                st.write(f"- {sig}")
+
+            if v_res["previews"]:
+                cols = st.columns(len(v_res["previews"]))
+                for col, (f_idx, f_sc, f_img) in zip(cols, v_res["previews"]):
+                    col.image(f_img, caption=f"Frame #{f_idx} ({f_sc:.1f}% AI)", use_container_width=True)
+        else:
+            pil_img = Image.open(df_file)
+            c_img, c_res = st.columns([1, 1.3])
+            with c_img:
+                st.image(pil_img, caption="Uploaded Image", use_container_width=True)
+            with c_res:
+                with st.spinner("Analyzing face crops, C2PA/EXIF metadata & 2D FFT spectrum..."):
+                    score, signals = analyze_single_frame_forensics(pil_img, models)
+
+                st.session_state["last_scan"] = f"Image Forensics ({df_file.name}) -> {score:.1f}% AI"
+                st.metric("AI Manipulation / Generation Probability", f"{score:.2f}%")
+
+                if score >= 55.0:
+                    st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-GENERATED / MANIPULATED IMAGE ({score:.1f}% AI confidence)</strong></div>", unsafe_allow_html=True)
+                elif score >= 30.0:
+                    st.markdown(f"<div class='verdict-warn'><strong>⚠️ SUSPICIOUS / MISSING CAMERA PROVENANCE ({score:.1f}%)</strong></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='verdict-safe'><strong>✅ AUTHENTIC PHOTOGRAPH ({100 - score:.2f}% real confidence)</strong></div>", unsafe_allow_html=True)
+
+                for sig in signals:
+                    st.write(f"- {sig}")
+
+# ------------------------------------------------------------------------------
+# TAB 4: DUAL-MODEL AI VOICE CLONE DETECTOR
+# ------------------------------------------------------------------------------
+with tab_voice:
+    st.subheader("🎙️ Dual-Model AI Voice Clone & Synthetic Speech Detector")
+    st.write("Detects AI voice cloners (**ElevenLabs, Kokoro, Speechify, Polly, RVC**) using **Wav2Vec2-XLSR neural detectors**, **silence-trimmed 4.5s speech windows**, and **vocoder spectral forensics**.")
+
+    aud_file = st.file_uploader("Upload voice note or call recording", type=["wav", "mp3", "ogg", "flac", "m4a"], key="aud_up")
+    if aud_file is not None and st.button("🎧 Detect AI Voice Clone", type="primary", key="run_aud"):
+        st.audio(aud_file)
+        with st.spinner("Decoding audio, trimming silence & running Wav2Vec2-XLSR voice clone models..."):
+            try:
+                wav_data, sr = load_audio_mono_16k(aud_file.read(), aud_file.name)
+                aud_models = load_audio_models()
+                v_audit = analyze_voice_clone_forensics(wav_data, sr, aud_models)
+
+                score = v_audit["clone_score"]
+                st.session_state["last_scan"] = f"Voice Clone Scan ({aud_file.name}) -> {score:.1f}% AI"
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("AI Voice Clone Probability", f"{score:.2f}%")
+                c2.metric("Active Speech Analyzed", f"{v_audit['duration_sec']} sec")
+                c3.metric("High-Freq Vocoder Ratio", f"{v_audit['hf_ratio']}")
+
+                if score >= 55.0:
+                    st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-CLONED / SYNTHETIC VOICE DETECTED ({score:.1f}% confidence)</strong></div>", unsafe_allow_html=True)
+                elif score >= 35.0:
+                    st.markdown(f"<div class='verdict-warn'><strong>⚠️ SUSPICIOUS VOCAL ARTIFACTS — VERIFY CALLER IDENTITY ({score:.1f}%)</strong></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<div class='verdict-safe'><strong>✅ NATURAL HUMAN VOICE ({100 - score:.1f}% human confidence)</strong></div>", unsafe_allow_html=True)
+
+                for sig in v_audit["signals"]:
+                    st.write(f"- {sig}")
+            except Exception as e:
+                st.error(f"Could not decode audio file ({e}). Please upload a `.wav`, `.mp3`, `.flac`, or `.ogg` audio file.")
+
+# ------------------------------------------------------------------------------
+# TAB 5: UNIVERSAL VIRUS, APK, PDF, DOCX & ZIP SCANNER
+# ------------------------------------------------------------------------------
+with tab_virus:
+    st.subheader("🦠 Universal Virus, APK, PDF, DOCX & ZIP Malware Scanner")
+    v_file = st.file_uploader("Upload any file (.apk, .exe, .pdf, .docx, .xlsx, .zip, .bat, .ps1)", key="virus_up")
+    if v_file is not None and st.button("🛡️ Deep Scan File for Viruses", type="primary", key="run_virus"):
+        with st.spinner("Inspecting binary headers, unpacking APK/DOCX/ZIP structures & querying global threat feeds..."):
+            rep = scan_file_for_viruses(v_file.read(), v_file.name, vt_api_key)
+
+        st.session_state["last_scan"] = f"Virus Scan ({rep['filename']}) -> Risk {rep['risk_score']}/100"
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Virus / Malware Risk", f"{rep['risk_score']} / 100")
+        m2.metric("Shannon Entropy", f"{rep['entropy']} / 8.0")
+        m3.metric("Items Inspected", rep["files_inspected"])
+        if rep["vt_report"]:
+            m4.metric("VirusTotal AV Hits", f"{rep['vt_report']['malicious']} / {rep['vt_report']['total']}")
+        else:
+            m4.metric("File Size", f"{rep['size_kb']} KB")
+
+        if rep["risk_score"] >= 60:
+            st.markdown("<div class='verdict-danger'><strong>🚨 VIRUS / TROJAN / EXPLOIT DETECTED — DO NOT OPEN OR INSTALL</strong></div>", unsafe_allow_html=True)
+        elif rep["risk_score"] >= 25:
+            st.markdown("<div class='verdict-warn'><strong>⚠️ SUSPICIOUS FILE STRUCTURE — TREAT WITH EXTREME CAUTION</strong></div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='verdict-safe'><strong>✅ CLEAN — NO VIRUS SIGNATURES, MACROS, OR TROJAN PERMISSIONS FOUND</strong></div>", unsafe_allow_html=True)
+
+        for t in rep["threats"]:
+            st.write(f"- {t}")
+
+        with st.expander("🔐 Cryptographic Hashes (MD5 / SHA-1 / SHA-256)"):
+            st.code(
+                f"File:    {rep['filename']}\n"
+                f"MD5:     {rep['md5']}\n"
+                f"SHA-1:   {rep['sha1']}\n"
+                f"SHA-256: {rep['sha256']}",
+                language="text",
             )
 
-        st.session_state["last_scan_summary"] = (
-            f"Network Guard Audit → {len(rows)} active connections, {len(suspicious_procs)} temp processes, {flagged_conns} proxy/VPN endpoints."
+# ------------------------------------------------------------------------------
+# TAB 6: LIVE NETWORK & SOCKET THREAT GUARD (MACOS + LINUX SAFE)
+# ------------------------------------------------------------------------------
+with tab_net:
+    st.subheader("🌐 Live Network, Interface & Socket Threat Guard")
+    if st.button("📡 Run Live Network & Socket Audit", type="primary", key="run_net"):
+        if_rows = []
+        addrs = psutil.net_if_addrs()
+        stats = psutil.net_if_stats()
+        for iface, addr_list in addrs.items():
+            is_up = stats[iface].isup if iface in stats else False
+            ipv4s = [a.address for a in addr_list if a.family == socket.AF_INET]
+            if ipv4s:
+                if_rows.append({"Interface": iface, "Status": "UP" if is_up else "DOWN", "IPv4 Address": ", ".join(ipv4s)})
+
+        if if_rows:
+            st.markdown("**Active Network Interfaces:**")
+            st.dataframe(if_rows, use_container_width=True)
+
+        raw_conns = []
+        try:
+            for c in psutil.net_connections(kind="inet"):
+                p_name = "System"
+                if c.pid:
+                    try:
+                        p_name = psutil.Process(c.pid).name()
+                    except Exception:
+                        pass
+                raw_conns.append((p_name, c.pid, c.status, c.laddr, c.raddr))
+        except psutil.AccessDenied:
+            for proc in psutil.process_iter(["pid", "name"]):
+                try:
+                    for c in proc.net_connections(kind="inet"):
+                        raw_conns.append((proc.info["name"] or "App", proc.info["pid"], c.status, c.laddr, c.raddr))
+                except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+
+        conns = []
+        unique_ips = set()
+        listening_ports = []
+
+        for proc_name, pid, status, laddr, raddr in raw_conns:
+            if status == "LISTEN" and laddr:
+                listening_ports.append({"Process": proc_name, "PID": pid, "Local IP": laddr.ip, "Listening Port": laddr.port})
+            elif status == "ESTABLISHED" and raddr:
+                rip = raddr.ip
+                try:
+                    ip_obj = ipaddress.ip_address(rip)
+                    if not ip_obj.is_private and not ip_obj.is_loopback:
+                        unique_ips.add(rip)
+                        conns.append({"Process": proc_name, "PID": pid, "Remote IP": rip, "Port": raddr.port})
+                except ValueError:
+                    pass
+
+        suspicious_c2_ports = {4444, 5555, 6666, 6667, 1337, 31337, 9001, 9050, 8443}
+        ip_intel = {}
+        if unique_ips:
+            ip_list = list(unique_ips)[:25]
+            with ThreadPoolExecutor(max_workers=10) as ex:
+                results = ex.map(lambda ip: lookup_ip_reputation(ip, abuse_api_key), ip_list)
+                ip_intel = dict(zip(ip_list, results))
+
+        st.markdown("**Live Outbound Public IP Connections:**")
+        if conns:
+            out_rows = []
+            for item in conns:
+                intel = ip_intel.get(item["Remote IP"], {})
+                port_flag = "⚠️ High-Risk Port" if item["Port"] in suspicious_c2_ports else "Normal"
+                out_rows.append({
+                    "Process": item["Process"],
+                    "Remote IP": item["Remote IP"],
+                    "Hostname": intel.get("hostname", "-"),
+                    "Port": item["Port"],
+                    "Port Risk": port_flag,
+                    "Country": intel.get("country", "Unknown"),
+                    "ISP / Cloud": intel.get("isp", "Unknown"),
+                    "AbuseIPDB Score": f"{intel.get('abuse_score', 0)}%",
+                })
+            st.dataframe(out_rows, use_container_width=True)
+        else:
+            st.success("Zero suspicious external connections active right now.")
+
+        if listening_ports:
+            with st.expander(f"🔌 Open Listening Server Ports ({len(listening_ports)} active)"):
+                st.dataframe(listening_ports, use_container_width=True)
+
+# ------------------------------------------------------------------------------
+# TAB 7: UNIVERSAL AI AGENT (ANSWERS ANY QUESTION)
+# ------------------------------------------------------------------------------
+with tab_ai:
+    st.subheader("🤖 AegisAI Sahayak — Universal AI Assistant")
+    st.caption("Ask ANY question — cybercrime emergency help, Indian IT Act laws, coding, science, general knowledge, or scan results.")
+
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = [
+            {"role": "assistant", "content": "Namaste! I am **AegisAI Sahayak**. Ask me anything — from cybercrime emergency steps (`1930`) to science, history, coding, or general knowledge!"}
+        ]
+
+    for msg in st.session_state["chat_history"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    user_q = st.chat_input("Ask any question here...")
+    if user_q:
+        st.session_state["chat_history"].append({"role": "user", "content": user_q})
+        with st.chat_message("user"):
+            st.markdown(user_q)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                reply = ask_universal_ai_agent(
+                    user_q,
+                    st.session_state["chat_history"],
+                    groq_api_key,
+                    gemini_api_key,
+                    st.session_state.get("last_scan", ""),
+                )
+            st.markdown(reply)
+        st.session_state["chat_history"].append({"role": "assistant", "content": reply})
+
+# ------------------------------------------------------------------------------
+# TAB 8: INTERACTIVE CITIZEN ACTION GUIDE & COMPLAINT GENERATOR
+# ------------------------------------------------------------------------------
+with tab_guide:
+    st.subheader("🇮🇳 Citizen Action Guide & Official Cybercrime Complaint Generator")
+
+    g_col1, g_col2 = st.columns([1.1, 1])
+    with g_col1:
+        st.markdown("#### 📋 Official Government of India Portals")
+        st.markdown(
+            """
+            | Portal / Helpline | Official Purpose | Access |
+            | :--- | :--- | :--- |
+            | **National Cyber Helpline (`1930`)** | Freeze fraudulent UPI/bank transfers within the Golden Hour | Dial **`1930`** (24×7 Toll-Free) |
+            | **National Cyber Crime Portal** | File formal complaints for financial fraud, deepfakes & harassment | **cybercrime.gov.in** |
+            | **Sanchar Saathi — Chakshu (DoT)** | Report scam calls, WhatsApp impersonation & fake SMS | **sancharsaathi.gov.in** |
+            | **CEIR Portal** | Block and trace lost/stolen mobile phones across India | **ceir.gov.in** |
+            | **RBI Sachet Portal** | Check if an investment/loan app is RBI/SEBI registered | **sachet.rbi.org.in** |
+            | **CERT-In** | Report critical malware, ransomware & security incidents | **cert-in.org.in** |
+            """
         )
 
-        if suspicious_procs:
-            st.error(f"🚨 {len(suspicious_procs)} App(s) Running from Temporary Folders:")
-            st.table(suspicious_procs)
-        elif flagged_conns > 0:
-            st.warning(f"⚠️ {flagged_conns} Connection(s) to Proxy/VPN/Tor Infrastructure Detected.")
-        else:
-            st.success("✅ System Processes & Outbound Connections Look Healthy!")
-
-        if rows:
-            st.dataframe(rows, width="stretch")
-        else:
-            st.info("No active external user-space connections found right now.")
-
-
-# =========================================================
-# TAB 8: 24/7 AI SUPPORT ASSISTANT & COMPLETE USER GUIDE
-# =========================================================
-with tab_support:
-    st.subheader("🤖 AegisAI Support Chat & Complete Cyber Safety Guide")
-
-    col_chat, col_guide = st.columns([3, 2])
-
-    with col_chat:
-        st.markdown("#### 💬 Ask AegisAI Assistant")
-        q1, q2, q3 = st.columns(3)
-        quick_q = None
-        if q1.button("🔍 Explain Last Scan"):
-            quick_q = "Explain my last scan result"
-        if q2.button("📷 UPI QR Scam Rules"):
-            quick_q = "How do fake UPI QR scams work?"
-        if q3.button("💬 Spot Fake Bank SMS"):
-            quick_q = "How do I spot fake bank KYC SMS?"
-
-        for msg in st.session_state["chat_history"]:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        typed_q = st.chat_input("Ask any cybersecurity question here...")
-        active_q = quick_q or typed_q
-
-        if active_q:
-            st.session_state["chat_history"].append({"role": "user", "content": active_q})
-            with st.chat_message("user"):
-                st.markdown(active_q)
-
-            ans = generate_ai_support_reply(active_q)
-            st.session_state["chat_history"].append({"role": "assistant", "content": ans})
-            with st.chat_message("assistant"):
-                st.markdown(ans)
-
-    with col_guide:
-        st.markdown("#### 📖 Step-by-Step User & Emergency Guide")
-        st.info(
-            """
-            **Emergency Cyber Fraud Helpline (India):**
-            * 📞 Call **1930** immediately within 1 hour (*Golden Hour*) to freeze fraudulent bank transfers.
-            * 🌐 Report online at **[cybercrime.gov.in](https://cybercrime.gov.in)**.
-
-            **Golden Rules for 99.9% Personal Safety:**
-            1. **Never scan a QR code or enter your UPI PIN to receive money.**
-            2. **Never install `.apk` files** sent over WhatsApp or SMS.
-            3. **Check the root domain** (e.g., `sbi.co.in` vs `sbi-kyc.xyz`) in our **Website & Link Check** tab before logging in.
-            """
+    with g_col2:
+        st.markdown("#### 📝 Instant Cybercrime Complaint Draft Generator")
+        victim_name = st.text_input("Your Full Name", placeholder="e.g., Rahul Sharma")
+        incident_type = st.selectbox(
+            "Type of Cybercrime",
+            ["UPI / Bank Financial Fraud", "Fake APK / Malware Hacking", "Digital Arrest / Impersonation Call", "Deepfake / AI Voice Clone Extortion", "SMS / WhatsApp Phishing Scam"],
         )
+        amount_lost = st.text_input("Amount Lost (₹) & 12-Digit UTR Number", placeholder="e.g., ₹15,000 | UTR: 432198765432")
+        suspect_info = st.text_input("Scammer Phone / UPI ID / Website", placeholder="e.g., +91-98XXXXXXXX / scammer@ybl")
+
+        if st.button("📄 Generate Official Complaint Draft", type="primary", key="gen_complaint"):
+            today_str = datetime.now().strftime("%d %B %Y, %I:%M %p")
+            draft = (
+                f"To,\nThe Nodal Cyber Cell Officer / Bank Branch Manager,\n"
+                f"Subject: Urgent Cybercrime Complaint & Transaction Freeze Request ({incident_type})\n\n"
+                f"Respected Sir/Madam,\n"
+                f"I, {victim_name or '[Your Name]'}, wish to report an incident of {incident_type} that occurred on {today_str}.\n"
+                f"- Financial Loss & UTR Reference: {amount_lost or 'N/A'}\n"
+                f"- Suspect Phone / UPI ID / URL: {suspect_info or 'N/A'}\n"
+                f"- Technical Forensics Note: {st.session_state.get('last_scan', 'Verified via AegisAI CyberCommand')}\n\n"
+                f"I request you to urgently freeze the beneficiary account/merchant ID under RBI Golden Hour guidelines and register this complaint on cybercrime.gov.in (Helpline 1930).\n\n"
+                f"Sincerely,\n{victim_name or '[Your Name]'}"
+            )
+            st.text_area("Copy & Paste into cybercrime.gov.in or Email to Your Bank:", value=draft, height=230)
+            st.download_button("⬇️ Download Complaint Letter (.txt)", data=draft, file_name="Cybercrime_Complaint_Draft.txt")
