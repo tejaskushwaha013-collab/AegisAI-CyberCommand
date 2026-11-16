@@ -8,8 +8,3 @@ soundfile
 numpy
 psutil
 requests
-
-## 🚀 How to Run Locally
-```bash
-pip install -r requirements.txt
-streamlit run aegis_v4.py
