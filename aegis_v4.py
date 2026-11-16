@@ -19,13 +19,13 @@ import cv2
 import requests
 import psutil
 import streamlit as st
-from PIL import Image, ExifTags
+from PIL import Image, ExifTags, ImageOps
 
 # ==============================================================================
 # PAGE CONFIGURATION & GOVERNMENT-GRADE PORTAL STYLING
 # ==============================================================================
 st.set_page_config(
-    page_title="AegisAI CyberCommand — Citizen Cyber Defense & AI Forensics",
+    page_title="Rakshak — Citizen Cyber Defense & AI Forensics Portal",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -84,7 +84,7 @@ st.markdown(
 # ==============================================================================
 # CACHED AI MODEL LOADERS (LAZY-LOADED TO PREVENT CLOUD MEMORY EXHAUSTION)
 # ==============================================================================
-@st.cache_resource(show_spinner="Loading Multi-Model Deepfake Image & Video Forensics...")
+@st.cache_resource(show_spinner="Loading Rakshak Multi-Model Deepfake Image & Video Forensics...")
 def load_deepfake_pipeline():
     loaded = []
     try:
@@ -102,7 +102,7 @@ def load_deepfake_pipeline():
     return loaded
 
 
-@st.cache_resource(show_spinner="Loading BERT Phishing & Scam Classifier...")
+@st.cache_resource(show_spinner="Loading Rakshak BERT Phishing & Scam Classifier...")
 def load_phishing_pipeline():
     try:
         from transformers import pipeline
@@ -111,7 +111,7 @@ def load_phishing_pipeline():
         return None
 
 
-@st.cache_resource(show_spinner="Loading Wav2Vec2 AI Voice Clone Forensics...")
+@st.cache_resource(show_spinner="Loading Rakshak Wav2Vec2 AI Voice Clone Forensics...")
 def load_audio_models():
     """Loads verified Wav2Vec2 deepfake voice detectors with explicit id2label mapping."""
     loaded = []
@@ -170,7 +170,6 @@ def check_dns_and_url_intel(raw_url: str, vt_api_key: str = "") -> dict:
     if domain in shorteners or any(domain.endswith("." + s) for s in shorteners):
         report["flags"].append(f"URL shortener ({domain}) hides the true destination website")
 
-    # Google Public DNS-over-HTTPS verification
     try:
         dns_resp = requests.get(
             "https://dns.google/resolve",
@@ -219,7 +218,7 @@ def check_dns_and_url_intel(raw_url: str, vt_api_key: str = "") -> dict:
         report["flags"].append("CRITICAL: Link points directly to a downloadable executable/APK file")
 
     try:
-        resp = requests.head(url, allow_redirects=True, timeout=2.5, headers={"User-Agent": "AegisAI-CitizenGuard/5.2"})
+        resp = requests.head(url, allow_redirects=True, timeout=2.5, headers={"User-Agent": "Rakshak-CitizenGuard/5.6"})
         report["final_url"] = resp.url
         report["redirect_hops"] = len(resp.history)
         final_host = (urlparse(resp.url).hostname or "").lower()
@@ -230,7 +229,6 @@ def check_dns_and_url_intel(raw_url: str, vt_api_key: str = "") -> dict:
     except Exception:
         pass
 
-    # Abuse.ch URLhaus live malware feed (Free, no key required)
     try:
         uh = requests.post("https://urlhaus-api.abuse.ch/v1/url/", data={"url": url}, timeout=2.5).json()
         if uh.get("query_status") == "ok":
@@ -265,13 +263,12 @@ def check_dns_and_url_intel(raw_url: str, vt_api_key: str = "") -> dict:
 # ==============================================================================
 def decode_qr_multipass(pil_img: Image.Image) -> list:
     """8-pass OpenCV + Otsu + CLAHE + Sharpened QR decoder for real-world photos and screenshots."""
-    rgb = np.array(pil_img.convert("RGB"))
+    pil_upright = ImageOps.exif_transpose(pil_img).convert("RGB")
+    rgb = np.array(pil_upright)
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-    # Add quiet-zone white border in case screenshot cropped tightly around QR corners
     padded = cv2.copyMakeBorder(gray, 30, 30, 30, 30, cv2.BORDER_CONSTANT, value=255)
-
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(padded)
 
@@ -439,12 +436,15 @@ def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
 
 
 # ==============================================================================
-# 3. MULTI-LAYER DEEPFAKE IMAGE & VIDEO FORENSICS
+# 3. CALIBRATED MULTI-LAYER DEEPFAKE IMAGE & VIDEO + AUDIO FUSION FORENSICS
 # ==============================================================================
 def inspect_image_metadata_and_fft(pil_img: Image.Image) -> tuple:
+    """Checks C2PA/AI signatures, physical camera EXIF provenance, and calibrated 2D FFT."""
     signals = []
     meta_score = 0.0
+    has_verified_camera = False
 
+    # 1. Check raw text chunks / XMP / C2PA signatures
     raw_info = str(pil_img.info).lower()
     ai_markers = [
         "c2pa", "jumbf", "midjourney", "dall-e", "stable diffusion",
@@ -452,43 +452,49 @@ def inspect_image_metadata_and_fft(pil_img: Image.Image) -> tuple:
         "trainedalgorithmicmedia", "comfyui", "automatic1111",
     ]
     if any(m in raw_info for m in ai_markers):
-        meta_score += 65.0
+        meta_score += 75.0
         signals.append("Embedded AI generator / C2PA cryptographic signature found in file headers")
 
+    # 2. Check genuine smartphone/DSLR camera EXIF hardware metadata
     exif = pil_img.getexif()
-    has_camera_exif = False
     if exif:
-        tag_names = {ExifTags.TAGS.get(k, k) for k in exif.keys()}
-        if {"Make", "Model"} & tag_names:
-            has_camera_exif = True
-    if not has_camera_exif:
-        meta_score += 24.0
-        signals.append("No physical camera sensor EXIF metadata (Make/Model) present")
+        tag_map = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
+        camera_make = str(tag_map.get("Make", "")).strip()
+        camera_model = str(tag_map.get("Model", "")).strip()
+        if camera_make and camera_model:
+            has_verified_camera = True
+            signals.append(f"Verified physical camera EXIF metadata: {camera_make} {camera_model}")
 
-    gray = np.array(pil_img.convert("L"), dtype=np.float32)
-    f_shift = np.fft.fftshift(np.fft.fft2(gray))
+    if not has_verified_camera:
+        meta_score += 18.0
+        signals.append("No physical camera hardware EXIF tags (Make/Model) present")
+
+    # 3. Calibrated 2D FFT check (downsampled to 512x512 so high-MP camera sharpness doesn't false-trigger)
+    gray_512 = np.array(pil_img.convert("L").resize((512, 512)), dtype=np.float32)
+    f_shift = np.fft.fftshift(np.fft.fft2(gray_512))
     mag = np.log1p(np.abs(f_shift))
-    h, w = mag.shape
-    cy, cx = h // 2, w // 2
-    r = max(8, min(h, w) // 6)
+    cy, cx = 256, 256
+    r = 64
     center_energy = float(np.mean(mag[cy - r:cy + r, cx - r:cx + r]))
     outer_energy = float(np.mean(mag))
     freq_ratio = outer_energy / (center_energy + 1e-6)
-    if freq_ratio > 0.62 or freq_ratio < 0.43:
-        meta_score += 20.0
-        signals.append(f"2D FFT frequency spectrum anomaly ({freq_ratio:.3f}) consistent with neural upsampling")
+    if freq_ratio < 0.42:
+        meta_score += 18.0
+        signals.append(f"Abnormal low-frequency FFT concentration ({freq_ratio:.3f}) typical of synthetic smoothing")
 
-    return min(meta_score, 95.0), signals
+    return min(meta_score, 95.0), signals, has_verified_camera
 
 
 def analyze_single_frame_forensics(pil_img: Image.Image, models: list) -> tuple:
-    rgb = np.array(pil_img.convert("RGB"))
-    crops = [("Full Frame", pil_img.convert("RGB"))]
+    """Applies EXIF upright rotation, face-crop consensus, and camera provenance calibration."""
+    pil_upright = ImageOps.exif_transpose(pil_img).convert("RGB")
+    rgb = np.array(pil_upright)
 
+    crops = [("Full Frame", pil_upright)]
     try:
         face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(56, 56))
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(64, 64))
         for idx, (x, y, w, h) in enumerate(faces[:2]):
             pad = int(0.28 * max(w, h))
             x1, y1 = max(0, x - pad), max(0, y - pad)
@@ -498,11 +504,12 @@ def analyze_single_frame_forensics(pil_img: Image.Image, models: list) -> tuple:
         pass
 
     ai_positive_tokens = {"fake", "ai", "artificial", "generated", "deepfake", "synthetic", "manipulated"}
-    model_scores = []
+    per_model_scores = []
     model_notes = []
 
     for model_name, clf in models:
         short_name = model_name.split("/")[-1]
+        crop_scores = []
         for crop_label, crop_img in crops:
             try:
                 preds = clf(crop_img)
@@ -511,92 +518,39 @@ def analyze_single_frame_forensics(pil_img: Image.Image, models: list) -> tuple:
                     lbl = p["label"].lower().strip()
                     if lbl == "ai" or any(tok in lbl for tok in ai_positive_tokens):
                         fake_prob = max(fake_prob, float(p["score"]) * 100.0)
-                model_scores.append(fake_prob)
-                if fake_prob >= 45.0:
+                crop_scores.append(fake_prob)
+                if fake_prob >= 55.0:
                     model_notes.append(f"{short_name} ({crop_label}): {fake_prob:.1f}% AI probability")
             except Exception:
                 continue
 
-    neural_peak = max(model_scores) if model_scores else 0.0
-    heuristic_score, heuristic_signals = inspect_image_metadata_and_fft(pil_img)
+        if crop_scores:
+            if len(crop_scores) > 1:
+                face_avg = float(np.mean(crop_scores[1:]))
+                per_model_scores.append(0.70 * face_avg + 0.30 * crop_scores[0])
+            else:
+                per_model_scores.append(crop_scores[0])
 
-    if neural_peak >= 50.0:
-        combined = max(neural_peak, 0.80 * neural_peak + 0.25 * heuristic_score)
+    # Weighted consensus across neural models (prevents single-model false spikes on real photos)
+    if len(per_model_scores) >= 2:
+        neural_consensus = 0.55 * max(per_model_scores) + 0.45 * min(per_model_scores)
+    elif per_model_scores:
+        neural_consensus = per_model_scores[0]
     else:
-        combined = max(neural_peak, 0.55 * neural_peak + 0.65 * heuristic_score)
+        neural_consensus = 0.0
+
+    heuristic_score, heuristic_signals, has_verified_camera = inspect_image_metadata_and_fft(pil_img)
+
+    if has_verified_camera and heuristic_score < 50.0:
+        combined = 0.55 * neural_consensus + 0.15 * heuristic_score
+    else:
+        combined = 0.72 * neural_consensus + 0.28 * heuristic_score
 
     return min(round(combined, 2), 99.9), model_notes + heuristic_signals
 
 
-def analyze_video_forensics(video_bytes: bytes, filename: str, models: list) -> dict:
-    ext = os.path.splitext(filename)[1] or ".mp4"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(video_bytes)
-        tmp_path = tmp.name
-
-    frame_scores = []
-    collected_signals = []
-    sampled_previews = []
-    temporal_diffs = []
-
-    try:
-        cap = cv2.VideoCapture(tmp_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames <= 0:
-            total_frames = 120
-
-        indices = np.linspace(0, max(0, total_frames - 1), num=min(16, max(1, total_frames)), dtype=int)
-        prev_gray = None
-
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                continue
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            gray_small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (128, 128))
-            if prev_gray is not None:
-                diff = float(np.mean(np.abs(gray_small.astype(np.float32) - prev_gray.astype(np.float32))))
-                temporal_diffs.append(diff)
-            prev_gray = gray_small
-
-            pil_frame = Image.fromarray(rgb)
-            f_score, f_signals = analyze_single_frame_forensics(pil_frame, models)
-            frame_scores.append(f_score)
-            for s in f_signals:
-                if s not in collected_signals:
-                    collected_signals.append(s)
-            if len(sampled_previews) < 4:
-                sampled_previews.append((int(idx), f_score, pil_frame))
-
-        cap.release()
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
-    if not frame_scores:
-        return {"final_score": 0.0, "peak_score": 0.0, "frames_analyzed": 0, "signals": ["Could not decode video frames"], "previews": []}
-
-    top_k = sorted(frame_scores, reverse=True)[:4]
-    peak_mean = float(np.mean(top_k))
-    peak_max = float(max(frame_scores))
-
-    if temporal_diffs and float(np.std(temporal_diffs)) > 14.5:
-        peak_mean = min(99.9, peak_mean + 12.0)
-        collected_signals.append(f"High frame-to-frame temporal pixel jitter (std={np.std(temporal_diffs):.2f})")
-
-    final_score = max(peak_mean, 0.85 * peak_max)
-    return {
-        "final_score": round(min(final_score, 99.9), 2),
-        "peak_score": round(peak_max, 2),
-        "frames_analyzed": len(frame_scores),
-        "signals": collected_signals,
-        "previews": sampled_previews,
-    }
-
-
 # ==============================================================================
-# 4. DUAL-MODEL WAV2VEC2-XLSR AI VOICE CLONE DETECTOR (EXPLICIT ID2LABEL)
+# 4. DUAL-MODEL WAV2VEC2-XLSR AI VOICE CLONE DETECTOR
 # ==============================================================================
 def load_audio_mono_16k(audio_bytes: bytes, filename: str) -> tuple:
     ext = os.path.splitext(filename)[1].lower() or ".wav"
@@ -633,14 +587,12 @@ def analyze_voice_clone_forensics(wav: np.ndarray, sr: int, models: list) -> dic
     if wav is None or len(wav) < sr // 2:
         return {"clone_score": 0.0, "duration_sec": 0.0, "flatness": 0.0, "hf_ratio": 0.0, "signals": ["Audio clip too short (< 0.5s)"]}
 
-    # Trim leading/trailing silence and normalize amplitude
     peak_amp = float(np.max(np.abs(wav))) + 1e-8
     wav_norm = wav / peak_amp
     active_idx = np.where(np.abs(wav_norm) > 0.025)[0]
     wav_speech = wav_norm[active_idx[0]:active_idx[-1]] if len(active_idx) > sr // 2 else wav_norm
     duration_sec = round(len(wav_speech) / float(sr), 2)
 
-    # Vocoder DSP Forensics (High-frequency cutoff & spectral flatness)
     fft_mag = np.abs(np.fft.rfft(wav_speech))
     freqs = np.fft.rfftfreq(len(wav_speech), d=1.0 / sr)
     total_energy = float(np.sum(fft_mag ** 2)) + 1e-9
@@ -671,16 +623,15 @@ def analyze_voice_clone_forensics(wav: np.ndarray, sr: int, models: list) -> dic
         dsp_score += 18.0
         signals.append(f"Uniform synthetic syllable cadence (amplitude variation {rms_cv:.2f})")
 
-    # Slice speech into up to 4 overlapping 4.5-second segments (optimal window for Wav2Vec2)
     win_size = int(sr * 4.5)
     chunks = []
     if len(wav_speech) <= win_size:
         chunks.append(wav_speech)
     else:
-        step = max(sr * 2, (len(wav_speech) - win_size) // 3)
+        step = max(sr * 2, (len(wav_speech) - win_size) // 5)
         for start in range(0, len(wav_speech) - win_size + 1, step):
             chunks.append(wav_speech[start:start + win_size])
-            if len(chunks) >= 4:
+            if len(chunks) >= 6:
                 break
 
     neural_scores = []
@@ -728,6 +679,102 @@ def analyze_voice_clone_forensics(wav: np.ndarray, sr: int, models: list) -> dic
         "flatness": round(flatness, 5),
         "hf_ratio": round(hf_ratio, 5),
         "signals": signals,
+    }
+
+
+def analyze_video_forensics(video_bytes: bytes, filename: str, models: list) -> dict:
+    """Audits BOTH visual frames (face-crops + FFT + neural) AND the video's embedded audio track."""
+    ext = os.path.splitext(filename)[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(video_bytes)
+        tmp_path = tmp.name
+
+    frame_scores = []
+    collected_signals = []
+    sampled_previews = []
+    temporal_diffs = []
+    audio_clone_score = 0.0
+
+    try:
+        cap = cv2.VideoCapture(tmp_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames <= 0:
+            total_frames = 120
+
+        indices = np.linspace(0, max(0, total_frames - 1), num=min(16, max(1, total_frames)), dtype=int)
+        prev_gray = None
+
+        for idx in indices:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            gray_small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (128, 128))
+            if prev_gray is not None:
+                diff = float(np.mean(np.abs(gray_small.astype(np.float32) - prev_gray.astype(np.float32))))
+                temporal_diffs.append(diff)
+            prev_gray = gray_small
+
+            pil_frame = Image.fromarray(rgb)
+            f_score, f_signals = analyze_single_frame_forensics(pil_frame, models)
+            frame_scores.append(f_score)
+            for s in f_signals:
+                if s not in collected_signals:
+                    collected_signals.append(s)
+            if len(sampled_previews) < 4:
+                sampled_previews.append((int(idx), f_score, pil_frame))
+
+        cap.release()
+
+        # Audit embedded audio track inside video for AI TTS voiceovers / voice cloning
+        try:
+            import librosa
+            wav_vid, sr_vid = librosa.load(tmp_path, sr=16000, mono=True)
+            if wav_vid is not None and len(wav_vid) > 16000:
+                aud_models = load_audio_models()
+                aud_res = analyze_voice_clone_forensics(wav_vid, sr_vid, aud_models)
+                audio_clone_score = float(aud_res.get("clone_score", 0.0))
+                if audio_clone_score >= 40.0:
+                    collected_signals.insert(
+                        0,
+                        f"AI-Generated / Synthetic Voiceover Track Detected ({audio_clone_score:.1f}% AI voice probability)",
+                    )
+                for a_sig in aud_res.get("signals", []):
+                    if a_sig not in collected_signals:
+                        collected_signals.append(f"[Audio Track] {a_sig}")
+        except Exception:
+            pass
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    if not frame_scores:
+        return {
+            "final_score": round(audio_clone_score, 2),
+            "peak_score": round(audio_clone_score, 2),
+            "frames_analyzed": 0,
+            "signals": collected_signals or ["Could not decode video frames"],
+            "previews": [],
+        }
+
+    top_k = sorted(frame_scores, reverse=True)[:4]
+    visual_peak_mean = float(np.mean(top_k))
+    visual_peak_max = float(max(frame_scores))
+
+    if temporal_diffs and float(np.std(temporal_diffs)) > 14.5:
+        visual_peak_mean = min(99.9, visual_peak_mean + 12.0)
+        collected_signals.append(f"High frame-to-frame temporal pixel jitter (std={np.std(temporal_diffs):.2f})")
+
+    visual_score = max(visual_peak_mean, 0.85 * visual_peak_max)
+    final_score = max(visual_score, audio_clone_score)
+
+    return {
+        "final_score": round(min(final_score, 99.9), 2),
+        "peak_score": round(max(visual_peak_max, audio_clone_score), 2),
+        "frames_analyzed": len(frame_scores),
+        "signals": collected_signals,
+        "previews": sampled_previews,
     }
 
 
@@ -832,7 +879,7 @@ def inspect_raw_buffer_heuristics(buf: bytes, name: str) -> tuple:
             (rb"/OpenAction\b|/AA\b", 35, "PDF executes automatic actions immediately when opened"),
             (rb"/Launch\b", 65, "PDF attempts to launch external system commands (/Launch)"),
             (rb"/EmbeddedFile\b", 30, "PDF hides an embedded file attachment inside its stream"),
-            (rb"/RichMedia\b|/JBIG2Decode\b", 30, "PDF uses high-risk exploit stream (/JBIG2Decode or /RichMedia)"),
+            (rb"/RichMedia\b|/JBIG2Decode\b", 30, "PDF uses high-risk exploit vector stream (/JBIG2Decode or /RichMedia)"),
         ]
         for pat, pts, desc in pdf_triggers:
             if re.search(pat, buf):
@@ -1033,13 +1080,12 @@ def lookup_ip_reputation(ip: str, abuse_key: str = "") -> dict:
 def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", gemini_key: str = "", last_scan: str = "") -> str:
     """Answers ANY question (cybersecurity or general) via Groq/Gemini LLM or free live Wikipedia/DuckDuckGo fallback."""
     system_prompt = (
-        "You are AegisAI Sahayak, an authoritative, helpful, and accurate AI assistant built into India's Citizen Cyber Defense Portal. "
+        "You are Rakshak AI Sahayak, an authoritative, helpful, and accurate AI assistant built into India's Citizen Cyber Defense Portal. "
         "You can answer ANY question — whether about cybersecurity, Indian cyber laws (IT Act 2000, BNS, 1930 helpline), science, coding, "
         "history, education, or everyday topics. When relevant to cyber fraud in India, remind citizens of helpline 1930 and cybercrime.gov.in. "
         f"Latest scan context in user's session: {last_scan or 'None'}."
     )
 
-    # 1. Groq Llama-3.3-70B (Ultra-fast free API if key provided)
     if groq_key.strip():
         try:
             msgs = [{"role": "system", "content": system_prompt}]
@@ -1057,7 +1103,6 @@ def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", 
         except Exception:
             pass
 
-    # 2. Google Gemini API (Free tier if key provided)
     if gemini_key.strip():
         try:
             resp = requests.post(
@@ -1071,10 +1116,8 @@ def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", 
         except Exception:
             pass
 
-    # 3. Built-in Zero-Key Knowledge & Cyber Incident Engine (Always works without API keys)
     q_low = prompt.lower().strip()
 
-    # Check high-priority Indian cybercrime emergency topics first
     if any(w in q_low for w in ["apk", "installed", "virus", "hacked", "screen share", "anydesk", "teamviewer"]):
         return (
             "### 🚨 Emergency Steps If You Installed a Malicious APK or Screen-Sharing App\n"
@@ -1098,7 +1141,6 @@ def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", 
             "3. Submit the acknowledgement number to your bank branch within 24 hours."
         )
 
-    # General Knowledge Live Lookup via DuckDuckGo Instant Answer + Wikipedia REST API
     clean_topic = re.sub(r"^(what is|who is|tell me about|explain|define|how does|what are)\s+", "", q_low).strip(" ?.!")
     try:
         ddg = requests.get(
@@ -1117,14 +1159,14 @@ def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", 
         search_resp = requests.get(
             "https://en.wikipedia.org/w/api.php",
             params={"action": "opensearch", "search": clean_topic or prompt, "limit": 1, "format": "json"},
-            headers={"User-Agent": "AegisAI-CitizenPortal/5.2"},
+            headers={"User-Agent": "Rakshak-CitizenPortal/5.6"},
             timeout=4.0,
         ).json()
         if len(search_resp) >= 4 and search_resp[1]:
             title = search_resp[1][0]
             summary_resp = requests.get(
                 f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(title)}",
-                headers={"User-Agent": "AegisAI-CitizenPortal/5.2"},
+                headers={"User-Agent": "Rakshak-CitizenPortal/5.6"},
                 timeout=4.0,
             ).json()
             extract = summary_resp.get("extract")
@@ -1135,8 +1177,8 @@ def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", 
         pass
 
     return (
-        f"I searched my built-in knowledge base for **\"{prompt}\"**, and to give you full conversational AI answers on every complex topic, "
-        "you can paste a free **Groq API Key** (`console.groq.com`) or **Google Gemini API Key** (`aistudio.google.com`) in the left sidebar under **AI Agent Keys**.\n\n"
+        f"I searched my built-in knowledge base for **\"{prompt}\"**, and to unlock full conversational AI answers on every complex topic, "
+        "paste a free **Groq API Key** (`console.groq.com`) or **Google Gemini API Key** (`aistudio.google.com`) in the left sidebar under **Universal AI Agent Keys**.\n\n"
         f"**Current Session Context:** `{last_scan or 'Ready for scan'}`"
     )
 
@@ -1145,8 +1187,8 @@ def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", 
 # SIDEBAR & PORTAL HEADER
 # ==============================================================================
 with st.sidebar:
-    st.markdown("### 🛡️ AegisAI CyberCommand")
-    st.caption("Citizen Cyber Defense & AI Forensics Suite")
+    st.markdown("### 🛡️ Rakshak")
+    st.caption("National Citizen Cyber Defense & AI Forensics")
 
     st.error("**🇮🇳 National Cyber Helpline: `1930`**\n\nReport Online: **cybercrime.gov.in**\n\nReport Scam Calls/SMS: **sancharsaathi.gov.in**")
 
@@ -1179,7 +1221,7 @@ with st.sidebar:
 st.markdown(
     """
     <div class="main-banner">
-        <h2 style="margin:0;">🛡️ AegisAI CyberCommand — Citizen Cybercrime & Virus Defense Portal</h2>
+        <h2 style="margin:0;">🛡️ Rakshak — National Citizen Cybercrime & Virus Defense Portal</h2>
         <p style="margin:6px 0 0 0; opacity:0.9;">
             Multi-Modal AI Forensics for UPI/QR Fraud • Digital Arrest & WhatsApp Scams • Deepfake Videos & Voice Clones • APK/PDF/ZIP Virus Scanning
         </p>
@@ -1201,7 +1243,7 @@ tab_qr, tab_sms, tab_df, tab_voice, tab_virus, tab_net, tab_ai, tab_guide = st.t
     "🎙️ AI Voice Clone Detector",
     "🦠 Virus, APK & Doc Scanner",
     "🌐 Live Network Guard",
-    "🤖 Universal AI Agent",
+    "🤖 Rakshak AI Agent",
     "🇮🇳 Citizen Action Guide",
 ])
 
@@ -1264,7 +1306,7 @@ with tab_sms:
         if not msg_input.strip():
             st.warning("Please paste a message first.")
         else:
-            with st.spinner("Running BERT transformer + Indian cybercrime rules + live DNS/URLhaus checks..."):
+            with st.spinner("Running Rakshak BERT transformer + Indian cybercrime rules + live DNS/URLhaus checks..."):
                 s_res = analyze_sms_and_whatsapp(msg_input, vt_api_key)
 
             st.session_state["last_scan"] = f"SMS/WhatsApp Scan -> Risk {s_res['risk_score']}%"
@@ -1289,33 +1331,35 @@ with tab_sms:
                     st.write(f"- `{u_info['normalized_url']}` → DNS Valid: **{u_info['dns_valid']}** | IPs: `{', '.join(u_info['resolved_ips']) or 'None'}`")
 
 # ------------------------------------------------------------------------------
-# TAB 3: MULTI-LAYER DEEPFAKE IMAGE & VIDEO FORENSICS
+# TAB 3: CALIBRATED MULTI-LAYER DEEPFAKE IMAGE & VIDEO + AUDIO FUSION FORENSICS
 # ------------------------------------------------------------------------------
 with tab_df:
     st.subheader("🎭 Deepfake & AI-Generated Media Forensics (Images & Videos)")
+    st.write("Audits **both** visual frames (EXIF orientation + face crops + calibrated FFT + dual Vision Transformers) **and** embedded video voiceovers.")
+
     df_file = st.file_uploader(
         "Upload suspicious photo or video",
         type=["jpg", "jpeg", "png", "webp", "mp4", "mov", "avi", "mkv"],
         key="df_up",
     )
 
-    if df_file is not None and st.button("🔬 Run Deepfake Forensics", type="primary", key="run_df"):
+    if df_file is not None and st.button("🔬 Run Rakshak Deepfake Forensics", type="primary", key="run_df"):
         models = load_deepfake_pipeline()
         ext = os.path.splitext(df_file.name)[1].lower()
 
         if ext in (".mp4", ".mov", ".avi", ".mkv"):
-            with st.spinner("Sampling 16 video frames, extracting faces & running FFT/neural forensics..."):
+            with st.spinner("Sampling 16 video frames, extracting faces, auditing audio voiceover & running FFT forensics..."):
                 v_res = analyze_video_forensics(df_file.read(), df_file.name, models)
 
             score = v_res["final_score"]
             st.session_state["last_scan"] = f"Video Deepfake Scan ({df_file.name}) -> {score:.1f}% AI"
             c1, c2, c3 = st.columns(3)
             c1.metric("AI / Deepfake Probability", f"{score:.2f}%")
-            c2.metric("Peak Frame Score", f"{v_res['peak_score']:.2f}%")
+            c2.metric("Peak Signal Score", f"{v_res['peak_score']:.2f}%")
             c3.metric("Frames Audited", v_res["frames_analyzed"])
 
             if score >= 55.0:
-                st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-GENERATED / DEEPFAKE VIDEO DETECTED ({score:.1f}% confidence)</strong></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-GENERATED / DEEPFAKE MEDIA DETECTED ({score:.1f}% confidence)</strong></div>", unsafe_allow_html=True)
             elif score >= 30.0:
                 st.markdown(f"<div class='verdict-warn'><strong>⚠️ SUSPICIOUS SYNTHETIC ARTIFACTS DETECTED ({score:.1f}%)</strong></div>", unsafe_allow_html=True)
             else:
@@ -1330,11 +1374,12 @@ with tab_df:
                     col.image(f_img, caption=f"Frame #{f_idx} ({f_sc:.1f}% AI)", use_container_width=True)
         else:
             pil_img = Image.open(df_file)
+            pil_display = ImageOps.exif_transpose(pil_img).convert("RGB")
             c_img, c_res = st.columns([1, 1.3])
             with c_img:
-                st.image(pil_img, caption="Uploaded Image", use_container_width=True)
+                st.image(pil_display, caption="Uploaded Image", use_container_width=True)
             with c_res:
-                with st.spinner("Analyzing face crops, C2PA/EXIF metadata & 2D FFT spectrum..."):
+                with st.spinner("Analyzing EXIF camera provenance, face crops & calibrated 2D FFT spectrum..."):
                     score, signals = analyze_single_frame_forensics(pil_img, models)
 
                 st.session_state["last_scan"] = f"Image Forensics ({df_file.name}) -> {score:.1f}% AI"
@@ -1360,7 +1405,7 @@ with tab_voice:
     aud_file = st.file_uploader("Upload voice note or call recording", type=["wav", "mp3", "ogg", "flac", "m4a"], key="aud_up")
     if aud_file is not None and st.button("🎧 Detect AI Voice Clone", type="primary", key="run_aud"):
         st.audio(aud_file)
-        with st.spinner("Decoding audio, trimming silence & running Wav2Vec2-XLSR voice clone models..."):
+        with st.spinner("Decoding audio, trimming silence & running Rakshak Wav2Vec2-XLSR voice clone models..."):
             try:
                 wav_data, sr = load_audio_mono_16k(aud_file.read(), aud_file.name)
                 aud_models = load_audio_models()
@@ -1515,26 +1560,26 @@ with tab_net:
 # TAB 7: UNIVERSAL AI AGENT (ANSWERS ANY QUESTION)
 # ------------------------------------------------------------------------------
 with tab_ai:
-    st.subheader("🤖 AegisAI Sahayak — Universal AI Assistant")
+    st.subheader("🤖 Rakshak AI Sahayak — Universal Assistant")
     st.caption("Ask ANY question — cybercrime emergency help, Indian IT Act laws, coding, science, general knowledge, or scan results.")
 
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = [
-            {"role": "assistant", "content": "Namaste! I am **AegisAI Sahayak**. Ask me anything — from cybercrime emergency steps (`1930`) to science, history, coding, or general knowledge!"}
+            {"role": "assistant", "content": "Namaste! I am **Rakshak AI Sahayak**. Ask me anything — from cybercrime emergency steps (`1930`) to science, history, coding, or general knowledge!"}
         ]
 
     for msg in st.session_state["chat_history"]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    user_q = st.chat_input("Ask any question here...")
+    user_q = st.chat_input("Ask Rakshak any question here...")
     if user_q:
         st.session_state["chat_history"].append({"role": "user", "content": user_q})
         with st.chat_message("user"):
             st.markdown(user_q)
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
+            with st.spinner("Rakshak AI is thinking..."):
                 reply = ask_universal_ai_agent(
                     user_q,
                     st.session_state["chat_history"],
@@ -1586,9 +1631,9 @@ with tab_guide:
                 f"I, {victim_name or '[Your Name]'}, wish to report an incident of {incident_type} that occurred on {today_str}.\n"
                 f"- Financial Loss & UTR Reference: {amount_lost or 'N/A'}\n"
                 f"- Suspect Phone / UPI ID / URL: {suspect_info or 'N/A'}\n"
-                f"- Technical Forensics Note: {st.session_state.get('last_scan', 'Verified via AegisAI CyberCommand')}\n\n"
+                f"- Technical Forensics Note: {st.session_state.get('last_scan', 'Verified via Rakshak Cyber Defense Portal')}\n\n"
                 f"I request you to urgently freeze the beneficiary account/merchant ID under RBI Golden Hour guidelines and register this complaint on cybercrime.gov.in (Helpline 1930).\n\n"
                 f"Sincerely,\n{victim_name or '[Your Name]'}"
             )
             st.text_area("Copy & Paste into cybercrime.gov.in or Email to Your Bank:", value=draft, height=230)
-            st.download_button("⬇️ Download Complaint Letter (.txt)", data=draft, file_name="Cybercrime_Complaint_Draft.txt")
+            st.download_button("⬇️ Download Complaint Letter (.txt)", data=draft, file_name="Rakshak_Cybercrime_Complaint.txt")
