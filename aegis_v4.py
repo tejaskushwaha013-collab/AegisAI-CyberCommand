@@ -6,6 +6,7 @@ import json
 import time
 import base64
 import socket
+import sqlite3
 import hashlib
 import zipfile
 import tempfile
@@ -21,11 +22,17 @@ import psutil
 import streamlit as st
 from PIL import Image, ExifTags, ImageOps
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.linear_model import SGDClassifier
+from sklearn.feature_extraction.text import HashingVectorizer
+
 # ==============================================================================
 # PAGE CONFIGURATION & GOVERNMENT-GRADE PORTAL STYLING
 # ==============================================================================
 st.set_page_config(
-    page_title="Rakshak — Citizen Cyber Defense & AI Forensics Portal",
+    page_title="Rakshak — Self-Learning Citizen Cyber Defense & AI Forensics",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -82,7 +89,212 @@ st.markdown(
 )
 
 # ==============================================================================
-# CACHED AI MODEL LOADERS (LAZY-LOADED TO PREVENT CLOUD MEMORY EXHAUSTION)
+# SELF-LEARNING ARTIFICIAL NEURAL NETWORK (ANN) + INCREMENTAL ML ENGINE
+# ==============================================================================
+DB_PATH = "rakshak_adaptive_brain.db"
+ANN_WEIGHTS_PATH = "rakshak_meta_ann.pt"
+
+
+class RakshakMetaANN(nn.Module):
+    """3-Layer Artificial Neural Network that learns optimal threat fusion from user feedback."""
+
+    def __init__(self, input_dim: int = 8):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 24),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(24, 12),
+            nn.ReLU(),
+            nn.Linear(12, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def init_adaptive_storage():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS feedback_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            module TEXT,
+            summary TEXT,
+            features_json TEXT,
+            raw_text TEXT,
+            base_score REAL,
+            true_label INTEGER
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+init_adaptive_storage()
+
+
+@st.cache_resource
+def get_adaptive_engine():
+    """Initializes the PyTorch ANN and Scikit-Learn Incremental Text Classifier + replays saved memory."""
+    ann = RakshakMetaANN(input_dim=8)
+    optimizer = optim.Adam(ann.parameters(), lr=0.015)
+    criterion = nn.BCELoss()
+
+    if os.path.exists(ANN_WEIGHTS_PATH):
+        try:
+            ann.load_state_dict(torch.load(ANN_WEIGHTS_PATH, map_location="cpu"))
+        except Exception:
+            pass
+
+    vectorizer = HashingVectorizer(n_features=2048, alternate_sign=False, ngram_range=(1, 2))
+    online_ml = SGDClassifier(loss="log_loss", random_state=42)
+
+    # Seed baseline knowledge so partial_fit works immediately on single samples
+    seed_texts = [
+        "Your electricity will be disconnected tonight call immediately",
+        "CBI digital arrest narcotics parcel customs transfer money to RBI account",
+        "Download RTO traffic challan apk file to pay fine",
+        "UPI collect request receive refund cashback enter pin",
+        "Hello mom I reached home safely call you in the evening",
+        "Meeting scheduled tomorrow at 10 AM in office conference room",
+        "Happy birthday wishing you great health and success",
+        "Verified government portal official receipt payment completed",
+    ]
+    seed_labels = np.array([1, 1, 1, 1, 0, 0, 0, 0])
+    online_ml.partial_fit(vectorizer.transform(seed_texts), seed_labels, classes=np.array([0, 1]))
+
+    # Replay historical user feedback from SQLite so learned patterns persist forever
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT features_json, raw_text, true_label FROM feedback_memory").fetchall()
+    conn.close()
+
+    if rows:
+        X_ann, y_ann = [], []
+        replay_texts, replay_labels = [], []
+        for f_json, r_txt, lbl in rows:
+            try:
+                vec = json.loads(f_json)
+                if len(vec) == 8:
+                    X_ann.append(vec)
+                    y_ann.append([float(lbl)])
+            except Exception:
+                pass
+            if r_txt and r_txt.strip():
+                replay_texts.append(r_txt)
+                replay_labels.append(int(lbl))
+
+        if replay_texts:
+            online_ml.partial_fit(vectorizer.transform(replay_texts), np.array(replay_labels))
+
+        if X_ann and not os.path.exists(ANN_WEIGHTS_PATH):
+            xt = torch.tensor(X_ann, dtype=torch.float32)
+            yt = torch.tensor(y_ann, dtype=torch.float32)
+            ann.train()
+            for _ in range(40):
+                optimizer.zero_grad()
+                loss = criterion(ann(xt), yt)
+                loss.backward()
+                optimizer.step()
+            ann.eval()
+
+    return {"ann": ann, "optimizer": optimizer, "criterion": criterion, "vectorizer": vectorizer, "online_ml": online_ml}
+
+
+def predict_adaptive_ann_score(feature_vec: list, base_score: float) -> float:
+    """Blends base forensic score with learned PyTorch ANN calibration when feedback exists."""
+    conn = sqlite3.connect(DB_PATH)
+    count = conn.execute("SELECT COUNT(*) FROM feedback_memory").fetchone()[0]
+    conn.close()
+
+    if count < 3:
+        return round(base_score, 2)
+
+    engine = get_adaptive_engine()
+    ann = engine["ann"]
+    ann.eval()
+    with torch.no_grad():
+        x = torch.tensor([feature_vec], dtype=torch.float32)
+        ann_prob = float(ann(x).item()) * 100.0
+
+    # Gradually increase ANN weight as verified user feedback grows (up to 45% influence)
+    ann_weight = min(0.45, 0.10 + count * 0.02)
+    blended = (1.0 - ann_weight) * base_score + ann_weight * ann_prob
+    return round(min(max(blended, 0.0), 99.9), 2)
+
+
+def train_on_user_feedback(module: str, summary: str, feature_vec: list, raw_text: str, base_score: float, true_label: int):
+    """Stores verified user feedback and runs live backpropagation on the PyTorch ANN + incremental ML."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO feedback_memory (timestamp, module, summary, features_json, raw_text, base_score, true_label) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), module, summary, json.dumps(feature_vec), raw_text, float(base_score), int(true_label)),
+    )
+    rows = conn.execute("SELECT features_json, true_label FROM feedback_memory ORDER BY id DESC LIMIT 128").fetchall()
+    conn.commit()
+    conn.close()
+
+    engine = get_adaptive_engine()
+    ann = engine["ann"]
+    optimizer = engine["optimizer"]
+    criterion = engine["criterion"]
+
+    # 1. Incremental Machine Learning update on text/payload
+    if raw_text and raw_text.strip():
+        X_txt = engine["vectorizer"].transform([raw_text])
+        engine["online_ml"].partial_fit(X_txt, np.array([int(true_label)]))
+
+    # 2. Experience-Replay Backpropagation on PyTorch Artificial Neural Network
+    X_batch, y_batch = [], []
+    for f_json, lbl in rows:
+        try:
+            v = json.loads(f_json)
+            if len(v) == 8:
+                X_batch.append(v)
+                y_batch.append([float(lbl)])
+        except Exception:
+            pass
+
+    if X_batch:
+        xt = torch.tensor(X_batch, dtype=torch.float32)
+        yt = torch.tensor(y_batch, dtype=torch.float32)
+        ann.train()
+        for _ in range(25):
+            optimizer.zero_grad()
+            out = ann(xt)
+            loss = criterion(out, yt)
+            loss.backward()
+            optimizer.step()
+        ann.eval()
+        torch.save(ann.state_dict(), ANN_WEIGHTS_PATH)
+
+
+def render_feedback_bar(scan_key: str, module: str, summary: str, feature_vec: list, raw_text: str, score: float):
+    """Renders 1-click user reinforcement learning buttons below any scan result."""
+    st.markdown("---")
+    st.caption("🧠 **Help Rakshak Learn:** Was this detection accurate? Your feedback trains Rakshak's Neural Network in real time.")
+    fb_c1, fb_c2, fb_c3 = st.columns([1, 1, 2])
+    with fb_c1:
+        if st.button("✅ Mark Safe / Real (0)", key=f"fb_safe_{scan_key}"):
+            train_on_user_feedback(module, summary, feature_vec, raw_text, score, 0)
+            st.success("Learned! Rakshak ANN & ML updated: classified as SAFE / AUTHENTIC.")
+    with fb_c2:
+        if st.button("🚨 Confirm Threat / Fake (1)", key=f"fb_threat_{scan_key}"):
+            train_on_user_feedback(module, summary, feature_vec, raw_text, score, 1)
+            st.warning("Learned! Rakshak ANN & ML updated: pattern reinforced as THREAT / FAKE.")
+    with fb_c3:
+        conn = sqlite3.connect(DB_PATH)
+        total_learned = conn.execute("SELECT COUNT(*) FROM feedback_memory").fetchone()[0]
+        conn.close()
+        st.info(f"Active Neural Memory: **{total_learned}** verified samples")
+
+
+# ==============================================================================
+# CACHED DEEP LEARNING MODEL LOADERS (LAZY-LOADED)
 # ==============================================================================
 @st.cache_resource(show_spinner="Loading Rakshak Multi-Model Deepfake Image & Video Forensics...")
 def load_deepfake_pipeline():
@@ -113,17 +325,13 @@ def load_phishing_pipeline():
 
 @st.cache_resource(show_spinner="Loading Rakshak Wav2Vec2 AI Voice Clone Forensics...")
 def load_audio_models():
-    """Loads verified Wav2Vec2 deepfake voice detectors with explicit id2label mapping."""
     loaded = []
     try:
-        import torch
         from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
-
-        model_ids = [
+        for mid in [
             "garystafford/wav2vec2-deepfake-voice-detector",
             "mo-thecreator/Deepfake-audio-detection",
-        ]
-        for mid in model_ids:
+        ]:
             try:
                 extractor = AutoFeatureExtractor.from_pretrained(mid)
                 model = AutoModelForAudioClassification.from_pretrained(mid)
@@ -218,7 +426,7 @@ def check_dns_and_url_intel(raw_url: str, vt_api_key: str = "") -> dict:
         report["flags"].append("CRITICAL: Link points directly to a downloadable executable/APK file")
 
     try:
-        resp = requests.head(url, allow_redirects=True, timeout=2.5, headers={"User-Agent": "Rakshak-CitizenGuard/5.6"})
+        resp = requests.head(url, allow_redirects=True, timeout=2.5, headers={"User-Agent": "Rakshak-AdaptiveGuard/6.0"})
         report["final_url"] = resp.url
         report["redirect_hops"] = len(resp.history)
         final_host = (urlparse(resp.url).hostname or "").lower()
@@ -259,10 +467,9 @@ def check_dns_and_url_intel(raw_url: str, vt_api_key: str = "") -> dict:
 
 
 # ==============================================================================
-# 2. 8-PASS UPI & QR CODE FORENSIC SCANNER
+# 2. 8-PASS UPI & QR CODE FORENSIC SCANNER + ADAPTIVE ML/ANN
 # ==============================================================================
 def decode_qr_multipass(pil_img: Image.Image) -> list:
-    """8-pass OpenCV + Otsu + CLAHE + Sharpened QR decoder for real-world photos and screenshots."""
     pil_upright = ImageOps.exif_transpose(pil_img).convert("RGB")
     rgb = np.array(pil_upright)
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -315,6 +522,10 @@ def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
     score = 0
     findings = []
     meta = {"Type": "Plain Text", "Raw Payload": payload}
+    is_collect = 0.0
+    has_amount = 0.0
+    scam_kw_hit = 0.0
+    url_flags_count = 0.0
 
     raw = payload.strip()
     low = raw.lower()
@@ -359,6 +570,7 @@ def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
 
         if action in ("collect", "mandate", "autopay"):
             score += 85
+            is_collect = 1.0
             findings.append(f"CRITICAL SCAM TRAP: QR triggers a UPI '{action.upper()}' pull request — scanning a QR is ONLY for paying money, NEVER for receiving money!")
 
         if am:
@@ -366,6 +578,7 @@ def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
                 amt_val = float(am)
                 if amt_val > 0:
                     score += 25
+                    has_amount = 1.0
                     findings.append(f"Pre-locked deduction amount of ₹{amt_val:,.2f} embedded in QR — verify before entering UPI PIN")
             except ValueError:
                 score += 35
@@ -395,6 +608,7 @@ def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
             combined_identity = f"{user_part} {pn}".lower()
             if any(w in combined_identity for w in scam_keywords):
                 score += 70
+                scam_kw_hit = 1.0
                 findings.append("FRAUD ALERT: Payee VPA/name uses Indian refund, cashback, or customer-care scam keywords")
 
             corp_tokens = ("pvt", "ltd", "limited", "store", "mart", "enterprises", "corp", "gov", "ministry", "bank", "airways", "railways")
@@ -405,6 +619,7 @@ def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
         if url_param:
             u_rep = check_dns_and_url_intel(url_param, vt_api_key)
             if u_rep["flags"]:
+                url_flags_count += len(u_rep["flags"])
                 score += len(u_rep["flags"]) * 25
                 findings.extend([f"Embedded UPI URL ({url_param}): {flg}" for flg in u_rep["flags"]])
 
@@ -418,6 +633,7 @@ def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
         meta["DNS Valid"] = "Yes" if url_rep["dns_valid"] else "No"
         meta["Resolved IPs"] = ", ".join(url_rep["resolved_ips"]) or "None"
         findings.extend(url_rep["flags"])
+        url_flags_count += len(url_rep["flags"])
         score += len(url_rep["flags"]) * 30
         if not findings:
             findings.append(f"Domain '{url_rep['domain']}' resolves cleanly with no known malware or phishing flags")
@@ -428,23 +644,29 @@ def audit_upi_or_qr_payload(payload: str, vt_api_key: str = "") -> dict:
             for u in urls[:2]:
                 u_rep = check_dns_and_url_intel(u, vt_api_key)
                 findings.extend(u_rep["flags"])
+                url_flags_count += len(u_rep["flags"])
                 score += len(u_rep["flags"]) * 30
         else:
             findings.append("Non-payment plain text QR code (Wi-Fi / vCard / Serial ID)")
 
-    return {"risk_score": min(score, 100), "findings": findings, "meta": meta}
+    # Query Incremental ML Classifier on payload text
+    engine = get_adaptive_engine()
+    ml_prob = float(engine["online_ml"].predict_proba(engine["vectorizer"].transform([raw]))[0][1]) * 100.0
+    base_score = min(float(score), 100.0)
+    feat_vec = [1.0, base_score / 100.0, ml_prob / 100.0, is_collect, has_amount, scam_kw_hit, min(url_flags_count / 4.0, 1.0), 0.0]
+    final_score = predict_adaptive_ann_score(feat_vec, base_score)
+
+    return {"risk_score": final_score, "findings": findings, "meta": meta, "features": feat_vec}
 
 
 # ==============================================================================
 # 3. CALIBRATED MULTI-LAYER DEEPFAKE IMAGE & VIDEO + AUDIO FUSION FORENSICS
 # ==============================================================================
 def inspect_image_metadata_and_fft(pil_img: Image.Image) -> tuple:
-    """Checks C2PA/AI signatures, physical camera EXIF provenance, and calibrated 2D FFT."""
     signals = []
     meta_score = 0.0
     has_verified_camera = False
 
-    # 1. Check raw text chunks / XMP / C2PA signatures
     raw_info = str(pil_img.info).lower()
     ai_markers = [
         "c2pa", "jumbf", "midjourney", "dall-e", "stable diffusion",
@@ -455,7 +677,6 @@ def inspect_image_metadata_and_fft(pil_img: Image.Image) -> tuple:
         meta_score += 75.0
         signals.append("Embedded AI generator / C2PA cryptographic signature found in file headers")
 
-    # 2. Check genuine smartphone/DSLR camera EXIF hardware metadata
     exif = pil_img.getexif()
     if exif:
         tag_map = {ExifTags.TAGS.get(k, k): v for k, v in exif.items()}
@@ -469,7 +690,6 @@ def inspect_image_metadata_and_fft(pil_img: Image.Image) -> tuple:
         meta_score += 18.0
         signals.append("No physical camera hardware EXIF tags (Make/Model) present")
 
-    # 3. Calibrated 2D FFT check (downsampled to 512x512 so high-MP camera sharpness doesn't false-trigger)
     gray_512 = np.array(pil_img.convert("L").resize((512, 512)), dtype=np.float32)
     f_shift = np.fft.fftshift(np.fft.fft2(gray_512))
     mag = np.log1p(np.abs(f_shift))
@@ -482,11 +702,10 @@ def inspect_image_metadata_and_fft(pil_img: Image.Image) -> tuple:
         meta_score += 18.0
         signals.append(f"Abnormal low-frequency FFT concentration ({freq_ratio:.3f}) typical of synthetic smoothing")
 
-    return min(meta_score, 95.0), signals, has_verified_camera
+    return min(meta_score, 95.0), signals, has_verified_camera, freq_ratio
 
 
 def analyze_single_frame_forensics(pil_img: Image.Image, models: list) -> tuple:
-    """Applies EXIF upright rotation, face-crop consensus, and camera provenance calibration."""
     pil_upright = ImageOps.exif_transpose(pil_img).convert("RGB")
     rgb = np.array(pil_upright)
 
@@ -531,7 +750,6 @@ def analyze_single_frame_forensics(pil_img: Image.Image, models: list) -> tuple:
             else:
                 per_model_scores.append(crop_scores[0])
 
-    # Weighted consensus across neural models (prevents single-model false spikes on real photos)
     if len(per_model_scores) >= 2:
         neural_consensus = 0.55 * max(per_model_scores) + 0.45 * min(per_model_scores)
     elif per_model_scores:
@@ -539,14 +757,25 @@ def analyze_single_frame_forensics(pil_img: Image.Image, models: list) -> tuple:
     else:
         neural_consensus = 0.0
 
-    heuristic_score, heuristic_signals, has_verified_camera = inspect_image_metadata_and_fft(pil_img)
+    heuristic_score, heuristic_signals, has_verified_camera, freq_ratio = inspect_image_metadata_and_fft(pil_img)
 
     if has_verified_camera and heuristic_score < 50.0:
-        combined = 0.55 * neural_consensus + 0.15 * heuristic_score
+        base_combined = 0.55 * neural_consensus + 0.15 * heuristic_score
     else:
-        combined = 0.72 * neural_consensus + 0.28 * heuristic_score
+        base_combined = 0.72 * neural_consensus + 0.28 * heuristic_score
 
-    return min(round(combined, 2), 99.9), model_notes + heuristic_signals
+    feat_vec = [
+        3.0,
+        neural_consensus / 100.0,
+        heuristic_score / 100.0,
+        1.0 if has_verified_camera else 0.0,
+        min(freq_ratio, 1.5) / 1.5,
+        1.0 if len(crops) > 1 else 0.0,
+        0.0,
+        0.0,
+    ]
+    calibrated = predict_adaptive_ann_score(feat_vec, base_combined)
+    return calibrated, model_notes + heuristic_signals, feat_vec
 
 
 # ==============================================================================
@@ -581,11 +810,9 @@ def load_audio_mono_16k(audio_bytes: bytes, filename: str) -> tuple:
 
 
 def analyze_voice_clone_forensics(wav: np.ndarray, sr: int, models: list) -> dict:
-    import torch
-
     signals = []
     if wav is None or len(wav) < sr // 2:
-        return {"clone_score": 0.0, "duration_sec": 0.0, "flatness": 0.0, "hf_ratio": 0.0, "signals": ["Audio clip too short (< 0.5s)"]}
+        return {"clone_score": 0.0, "duration_sec": 0.0, "flatness": 0.0, "hf_ratio": 0.0, "signals": ["Audio clip too short (< 0.5s)"], "features": [4.0, 0, 0, 0, 0, 0, 0, 0]}
 
     peak_amp = float(np.max(np.abs(wav))) + 1e-8
     wav_norm = wav / peak_amp
@@ -668,22 +895,26 @@ def analyze_voice_clone_forensics(wav: np.ndarray, sr: int, models: list) -> dic
     if neural_scores:
         peak_neural = max(neural_scores)
         mean_neural = float(np.mean(neural_scores))
-        final_clone = max(peak_neural, 0.78 * peak_neural + 0.22 * mean_neural + 0.20 * dsp_score)
+        base_clone = max(peak_neural, 0.78 * peak_neural + 0.22 * mean_neural + 0.20 * dsp_score)
     else:
-        final_clone = dsp_score
+        peak_neural = 0.0
+        base_clone = dsp_score
         signals.append("Acoustic DSP fallback active (neural audio weights unavailable)")
 
+    feat_vec = [4.0, peak_neural / 100.0, dsp_score / 100.0, min(hf_ratio * 100.0, 1.0), min(flatness * 50.0, 1.0), min(rms_cv, 2.0) / 2.0, min(duration_sec / 30.0, 1.0), 0.0]
+    calibrated_clone = predict_adaptive_ann_score(feat_vec, base_clone)
+
     return {
-        "clone_score": round(min(final_clone, 99.9), 2),
+        "clone_score": calibrated_clone,
         "duration_sec": duration_sec,
         "flatness": round(flatness, 5),
         "hf_ratio": round(hf_ratio, 5),
         "signals": signals,
+        "features": feat_vec,
     }
 
 
 def analyze_video_forensics(video_bytes: bytes, filename: str, models: list) -> dict:
-    """Audits BOTH visual frames (face-crops + FFT + neural) AND the video's embedded audio track."""
     ext = os.path.splitext(filename)[1] or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
         tmp.write(video_bytes)
@@ -717,7 +948,7 @@ def analyze_video_forensics(video_bytes: bytes, filename: str, models: list) -> 
             prev_gray = gray_small
 
             pil_frame = Image.fromarray(rgb)
-            f_score, f_signals = analyze_single_frame_forensics(pil_frame, models)
+            f_score, f_signals, _ = analyze_single_frame_forensics(pil_frame, models)
             frame_scores.append(f_score)
             for s in f_signals:
                 if s not in collected_signals:
@@ -727,7 +958,6 @@ def analyze_video_forensics(video_bytes: bytes, filename: str, models: list) -> 
 
         cap.release()
 
-        # Audit embedded audio track inside video for AI TTS voiceovers / voice cloning
         try:
             import librosa
             wav_vid, sr_vid = librosa.load(tmp_path, sr=16000, mono=True)
@@ -750,36 +980,42 @@ def analyze_video_forensics(video_bytes: bytes, filename: str, models: list) -> 
             os.remove(tmp_path)
 
     if not frame_scores:
+        feat_vec = [3.5, 0.0, audio_clone_score / 100.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         return {
             "final_score": round(audio_clone_score, 2),
             "peak_score": round(audio_clone_score, 2),
             "frames_analyzed": 0,
             "signals": collected_signals or ["Could not decode video frames"],
             "previews": [],
+            "features": feat_vec,
         }
 
     top_k = sorted(frame_scores, reverse=True)[:4]
     visual_peak_mean = float(np.mean(top_k))
     visual_peak_max = float(max(frame_scores))
+    jitter_std = float(np.std(temporal_diffs)) if temporal_diffs else 0.0
 
-    if temporal_diffs and float(np.std(temporal_diffs)) > 14.5:
+    if jitter_std > 14.5:
         visual_peak_mean = min(99.9, visual_peak_mean + 12.0)
-        collected_signals.append(f"High frame-to-frame temporal pixel jitter (std={np.std(temporal_diffs):.2f})")
+        collected_signals.append(f"High frame-to-frame temporal pixel jitter (std={jitter_std:.2f})")
 
     visual_score = max(visual_peak_mean, 0.85 * visual_peak_max)
-    final_score = max(visual_score, audio_clone_score)
+    base_video = max(visual_score, audio_clone_score)
+    feat_vec = [3.5, visual_score / 100.0, audio_clone_score / 100.0, min(jitter_std / 25.0, 1.0), len(frame_scores) / 16.0, 0.0, 0.0, 0.0]
+    calibrated_video = predict_adaptive_ann_score(feat_vec, base_video)
 
     return {
-        "final_score": round(min(final_score, 99.9), 2),
+        "final_score": calibrated_video,
         "peak_score": round(max(visual_peak_max, audio_clone_score), 2),
         "frames_analyzed": len(frame_scores),
         "signals": collected_signals,
         "previews": sampled_previews,
+        "features": feat_vec,
     }
 
 
 # ==============================================================================
-# 5. SMS, WHATSAPP & DIGITAL ARREST FULL-MESSAGE ANALYZER
+# 5. SMS, WHATSAPP & DIGITAL ARREST ANALYZER + INCREMENTAL ML
 # ==============================================================================
 def analyze_sms_and_whatsapp(text: str, vt_api_key: str = "") -> dict:
     clf = load_phishing_pipeline()
@@ -795,6 +1031,10 @@ def analyze_sms_and_whatsapp(text: str, vt_api_key: str = "") -> dict:
                 ai_peak = max(ai_peak, sc)
             except Exception:
                 pass
+
+    # Query Incremental Online ML Model (learned from user SMS feedback)
+    engine = get_adaptive_engine()
+    online_ml_prob = float(engine["online_ml"].predict_proba(engine["vectorizer"].transform([text]))[0][1]) * 100.0
 
     scam_rules = [
         (r"(digital arrest|cbi|ncb|enforcement directorate|\bed\b|cyber cell|narcotics|customs parcel|fedex|dhl.*parcel|trai.*disconnect|sim.*block)", 50, "Impersonates Police / CBI / TRAI / Customs ('Digital Arrest' or parcel extortion scam)"),
@@ -817,10 +1057,12 @@ def analyze_sms_and_whatsapp(text: str, vt_api_key: str = "") -> dict:
     cleaned_for_urls = re.sub(r"hxxps?://", "https://", text, flags=re.IGNORECASE)
     urls = list(dict.fromkeys(re.findall(r"(https?://[^\s<>\"']+|www\.[^\s<>\"']+)", cleaned_for_urls)))
     url_reports = []
+    url_flag_total = 0
     for u in urls[:4]:
         rep = check_dns_and_url_intel(u, vt_api_key)
         url_reports.append(rep)
         if rep["flags"]:
+            url_flag_total += len(rep["flags"])
             rule_score += len(rep["flags"]) * 28
             reasons.extend([f"Link ({u}): {flg}" for flg in rep["flags"]])
 
@@ -833,15 +1075,20 @@ def analyze_sms_and_whatsapp(text: str, vt_api_key: str = "") -> dict:
     if phones and rule_score > 0:
         reasons.append(f"Scammer mobile number(s) detected (report on Sanchar Saathi Chakshu): {', '.join(phones)}")
 
-    final_risk = min(100.0, max(ai_peak, 0.50 * ai_peak + 0.80 * rule_score))
+    base_risk = min(100.0, max(ai_peak, 0.45 * ai_peak + 0.65 * rule_score + 0.25 * online_ml_prob))
+    feat_vec = [2.0, ai_peak / 100.0, min(rule_score, 100) / 100.0, online_ml_prob / 100.0, min(len(urls) / 3.0, 1.0), min(url_flag_total / 4.0, 1.0), 1.0 if upi_ids else 0.0, 1.0 if phones else 0.0]
+    calibrated_risk = predict_adaptive_ann_score(feat_vec, base_risk)
+
     return {
-        "risk_score": round(final_risk, 1),
+        "risk_score": calibrated_risk,
         "ai_score": round(ai_peak, 1),
+        "online_ml_score": round(online_ml_prob, 1),
         "rule_score": min(100, rule_score),
         "reasons": reasons,
         "urls": url_reports,
         "upi_ids": upi_ids,
         "phones": phones,
+        "features": feat_vec,
     }
 
 
@@ -1027,6 +1274,9 @@ def scan_file_for_viruses(file_bytes: bytes, filename: str, vt_api_key: str = ""
     except Exception:
         pass
 
+    feat_vec = [5.0, min(total_risk, 100) / 100.0, root_entropy / 8.0, min(len(threats) / 5.0, 1.0), 1.0 if vt_report else 0.0, 1.0 if mb_report else 0.0, 1.0 if ext == ".apk" else 0.0, 0.0]
+    calibrated_risk = predict_adaptive_ann_score(feat_vec, float(min(total_risk, 100)))
+
     return {
         "filename": filename,
         "size_kb": round(len(file_bytes) / 1024.0, 2),
@@ -1035,10 +1285,11 @@ def scan_file_for_viruses(file_bytes: bytes, filename: str, vt_api_key: str = ""
         "sha256": sha256_h,
         "entropy": round(root_entropy, 3),
         "files_inspected": archive_files_scanned,
-        "risk_score": min(total_risk, 100),
+        "risk_score": calibrated_risk,
         "threats": list(dict.fromkeys(threats)),
         "vt_report": vt_report,
         "mb_report": mb_report,
+        "features": feat_vec,
     }
 
 
@@ -1078,9 +1329,8 @@ def lookup_ip_reputation(ip: str, abuse_key: str = "") -> dict:
 # 8. UNIVERSAL AI AGENT (ANSWERS ANY QUESTION — CYBERCRIME OR GENERAL KNOWLEDGE)
 # ==============================================================================
 def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", gemini_key: str = "", last_scan: str = "") -> str:
-    """Answers ANY question (cybersecurity or general) via Groq/Gemini LLM or free live Wikipedia/DuckDuckGo fallback."""
     system_prompt = (
-        "You are Rakshak AI Sahayak, an authoritative, helpful, and accurate AI assistant built into India's Citizen Cyber Defense Portal. "
+        "You are Rakshak AI Sahayak, an authoritative, helpful, and accurate AI assistant built into India's Self-Learning Citizen Cyber Defense Portal. "
         "You can answer ANY question — whether about cybersecurity, Indian cyber laws (IT Act 2000, BNS, 1930 helpline), science, coding, "
         "history, education, or everyday topics. When relevant to cyber fraud in India, remind citizens of helpline 1930 and cybercrime.gov.in. "
         f"Latest scan context in user's session: {last_scan or 'None'}."
@@ -1159,14 +1409,14 @@ def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", 
         search_resp = requests.get(
             "https://en.wikipedia.org/w/api.php",
             params={"action": "opensearch", "search": clean_topic or prompt, "limit": 1, "format": "json"},
-            headers={"User-Agent": "Rakshak-CitizenPortal/5.6"},
+            headers={"User-Agent": "Rakshak-CitizenPortal/6.0"},
             timeout=4.0,
         ).json()
         if len(search_resp) >= 4 and search_resp[1]:
             title = search_resp[1][0]
             summary_resp = requests.get(
                 f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(title)}",
-                headers={"User-Agent": "Rakshak-CitizenPortal/5.6"},
+                headers={"User-Agent": "Rakshak-CitizenPortal/6.0"},
                 timeout=4.0,
             ).json()
             extract = summary_resp.get("extract")
@@ -1187,8 +1437,8 @@ def ask_universal_ai_agent(prompt: str, chat_history: list, groq_key: str = "", 
 # SIDEBAR & PORTAL HEADER
 # ==============================================================================
 with st.sidebar:
-    st.markdown("### 🛡️ Rakshak")
-    st.caption("National Citizen Cyber Defense & AI Forensics")
+    st.markdown("### 🛡️ Rakshak AI v6.0")
+    st.caption("Self-Learning ML + PyTorch ANN Cyber Defense")
 
     st.error("**🇮🇳 National Cyber Helpline: `1930`**\n\nReport Online: **cybercrime.gov.in**\n\nReport Scam Calls/SMS: **sancharsaathi.gov.in**")
 
@@ -1197,13 +1447,11 @@ with st.sidebar:
         "Groq API Key (Llama-3.3-70B — Free)",
         value=os.getenv("GROQ_API_KEY", ""),
         type="password",
-        help="Optional free key from console.groq.com enables full conversational AI answers on any topic.",
     )
     gemini_api_key = st.text_input(
         "Google Gemini API Key (Free)",
         value=os.getenv("GEMINI_API_KEY", ""),
         type="password",
-        help="Optional free key from aistudio.google.com.",
     )
 
     st.markdown("#### 🔑 Virus & IP Threat Keys (Optional)")
@@ -1221,9 +1469,9 @@ with st.sidebar:
 st.markdown(
     """
     <div class="main-banner">
-        <h2 style="margin:0;">🛡️ Rakshak — National Citizen Cybercrime & Virus Defense Portal</h2>
+        <h2 style="margin:0;">🛡️ Rakshak — Self-Learning Citizen Cybercrime & Virus Defense Portal</h2>
         <p style="margin:6px 0 0 0; opacity:0.9;">
-            Multi-Modal AI Forensics for UPI/QR Fraud • Digital Arrest & WhatsApp Scams • Deepfake Videos & Voice Clones • APK/PDF/ZIP Virus Scanning
+            Deep Learning Transformers + Adaptive PyTorch Neural Network + Online Incremental ML that learns from every user scan
         </p>
     </div>
     <div class="helpline-strip">
@@ -1234,9 +1482,9 @@ st.markdown(
 )
 
 # ==============================================================================
-# 8-TAB CYBER DEFENSE WORKSPACE
+# 9-TAB SELF-LEARNING CYBER DEFENSE WORKSPACE
 # ==============================================================================
-tab_qr, tab_sms, tab_df, tab_voice, tab_virus, tab_net, tab_ai, tab_guide = st.tabs([
+tab_qr, tab_sms, tab_df, tab_voice, tab_virus, tab_net, tab_ai, tab_brain, tab_guide = st.tabs([
     "📱 UPI & QR Scam Guard",
     "📩 SMS & WhatsApp Shield",
     "🎭 Deepfake Image & Video",
@@ -1244,6 +1492,7 @@ tab_qr, tab_sms, tab_df, tab_voice, tab_virus, tab_net, tab_ai, tab_guide = st.t
     "🦠 Virus, APK & Doc Scanner",
     "🌐 Live Network Guard",
     "🤖 Rakshak AI Agent",
+    "🧠 AI Brain & Training",
     "🇮🇳 Citizen Action Guide",
 ])
 
@@ -1252,8 +1501,6 @@ tab_qr, tab_sms, tab_df, tab_voice, tab_virus, tab_net, tab_ai, tab_guide = st.t
 # ------------------------------------------------------------------------------
 with tab_qr:
     st.subheader("📱 8-Pass UPI Payment & Malicious QR Code Scanner")
-    st.write("Upload a screenshot or photo of any QR code before scanning it with GPay, PhonePe, Paytm, or BHIM.")
-
     c_q1, c_q2 = st.columns(2)
     with c_q1:
         qr_img_file = st.file_uploader("Upload QR Screenshot or Photo", type=["png", "jpg", "jpeg", "webp"], key="qr_up")
@@ -1272,24 +1519,27 @@ with tab_qr:
         if not decoded_list:
             st.error("No QR code could be decoded. Ensure the full square QR code is visible without glare.")
         else:
-            for payload in decoded_list:
-                audit = audit_upi_or_qr_payload(payload, vt_api_key)
-                st.session_state["last_scan"] = f"QR/UPI Scan -> Risk {audit['risk_score']}/100"
+            st.session_state["qr_results"] = [(p, audit_upi_or_qr_payload(p, vt_api_key)) for p in decoded_list]
 
-                m1, m2 = st.columns([1, 2])
-                m1.metric("QR Fraud Risk Score", f"{audit['risk_score']} / 100")
-                m2.code(payload, language="text")
+    if "qr_results" in st.session_state:
+        for idx_q, (payload, audit) in enumerate(st.session_state["qr_results"]):
+            st.session_state["last_scan"] = f"QR/UPI Scan -> Risk {audit['risk_score']}/100"
+            m1, m2 = st.columns([1, 2])
+            m1.metric("QR Fraud Risk Score", f"{audit['risk_score']} / 100")
+            m2.code(payload, language="text")
 
-                if audit["risk_score"] >= 60:
-                    st.markdown("<div class='verdict-danger'><strong>🚨 HIGH DANGER — DO NOT SCAN OR ENTER YOUR UPI PIN</strong></div>", unsafe_allow_html=True)
-                elif audit["risk_score"] >= 25:
-                    st.markdown("<div class='verdict-warn'><strong>⚠️ CAUTION — VERIFY PAYEE IDENTITY & AMOUNT BEFORE PAYING</strong></div>", unsafe_allow_html=True)
-                else:
-                    st.markdown("<div class='verdict-safe'><strong>✅ VERIFIED STRUCTURE — NO KNOWN FRAUD INDICATORS</strong></div>", unsafe_allow_html=True)
+            if audit["risk_score"] >= 60:
+                st.markdown("<div class='verdict-danger'><strong>🚨 HIGH DANGER — DO NOT SCAN OR ENTER YOUR UPI PIN</strong></div>", unsafe_allow_html=True)
+            elif audit["risk_score"] >= 25:
+                st.markdown("<div class='verdict-warn'><strong>⚠️ CAUTION — VERIFY PAYEE IDENTITY & AMOUNT BEFORE PAYING</strong></div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div class='verdict-safe'><strong>✅ VERIFIED STRUCTURE — NO KNOWN FRAUD INDICATORS</strong></div>", unsafe_allow_html=True)
 
-                st.json(audit["meta"])
-                for f in audit["findings"]:
-                    st.write(f"- {f}")
+            st.json(audit["meta"])
+            for f in audit["findings"]:
+                st.write(f"- {f}")
+
+            render_feedback_bar(f"qr_{idx_q}", "UPI/QR Scanner", payload[:80], audit["features"], payload, audit["risk_score"])
 
 # ------------------------------------------------------------------------------
 # TAB 2: SMS & WHATSAPP SCAM SHIELD
@@ -1306,37 +1556,35 @@ with tab_sms:
         if not msg_input.strip():
             st.warning("Please paste a message first.")
         else:
-            with st.spinner("Running Rakshak BERT transformer + Indian cybercrime rules + live DNS/URLhaus checks..."):
-                s_res = analyze_sms_and_whatsapp(msg_input, vt_api_key)
+            with st.spinner("Running BERT Deep Learning + Online Incremental ML + PyTorch ANN..."):
+                st.session_state["sms_result"] = (msg_input, analyze_sms_and_whatsapp(msg_input, vt_api_key))
 
-            st.session_state["last_scan"] = f"SMS/WhatsApp Scan -> Risk {s_res['risk_score']}%"
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Overall Scam Risk", f"{s_res['risk_score']}%")
-            c2.metric("AI Classifier Score", f"{s_res['ai_score']}%")
-            c3.metric("Links Extracted", len(s_res["urls"]))
+    if "sms_result" in st.session_state:
+        scanned_txt, s_res = st.session_state["sms_result"]
+        st.session_state["last_scan"] = f"SMS/WhatsApp Scan -> Risk {s_res['risk_score']}%"
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Overall Scam Risk", f"{s_res['risk_score']}%")
+        c2.metric("BERT Deep Learning", f"{s_res['ai_score']}%")
+        c3.metric("Adaptive Online ML", f"{s_res['online_ml_score']}%")
+        c4.metric("Links Extracted", len(s_res["urls"]))
 
-            if s_res["risk_score"] >= 60:
-                st.markdown("<div class='verdict-danger'><strong>🚨 SCAM / PHISHING ALERT — DO NOT CLICK LINKS, CALL BACK, OR SHARE OTP</strong></div>", unsafe_allow_html=True)
-            elif s_res["risk_score"] >= 30:
-                st.markdown("<div class='verdict-warn'><strong>⚠️ SUSPICIOUS MESSAGE — VERIFY THROUGH OFFICIAL APP OR 1930</strong></div>", unsafe_allow_html=True)
-            else:
-                st.markdown("<div class='verdict-safe'><strong>✅ LOW PHISHING RISK</strong></div>", unsafe_allow_html=True)
+        if s_res["risk_score"] >= 60:
+            st.markdown("<div class='verdict-danger'><strong>🚨 SCAM / PHISHING ALERT — DO NOT CLICK LINKS, CALL BACK, OR SHARE OTP</strong></div>", unsafe_allow_html=True)
+        elif s_res["risk_score"] >= 30:
+            st.markdown("<div class='verdict-warn'><strong>⚠️ SUSPICIOUS MESSAGE — VERIFY THROUGH OFFICIAL APP OR 1930</strong></div>", unsafe_allow_html=True)
+        else:
+            st.markdown("<div class='verdict-safe'><strong>✅ LOW PHISHING RISK</strong></div>", unsafe_allow_html=True)
 
-            for r in s_res["reasons"]:
-                st.write(f"- {r}")
+        for r in s_res["reasons"]:
+            st.write(f"- {r}")
 
-            if s_res["urls"]:
-                st.markdown("**Extracted URL Live Intelligence:**")
-                for u_info in s_res["urls"]:
-                    st.write(f"- `{u_info['normalized_url']}` → DNS Valid: **{u_info['dns_valid']}** | IPs: `{', '.join(u_info['resolved_ips']) or 'None'}`")
+        render_feedback_bar("sms_main", "SMS/WhatsApp Shield", scanned_txt[:80], s_res["features"], scanned_txt, s_res["risk_score"])
 
 # ------------------------------------------------------------------------------
 # TAB 3: CALIBRATED MULTI-LAYER DEEPFAKE IMAGE & VIDEO + AUDIO FUSION FORENSICS
 # ------------------------------------------------------------------------------
 with tab_df:
     st.subheader("🎭 Deepfake & AI-Generated Media Forensics (Images & Videos)")
-    st.write("Audits **both** visual frames (EXIF orientation + face crops + calibrated FFT + dual Vision Transformers) **and** embedded video voiceovers.")
-
     df_file = st.file_uploader(
         "Upload suspicious photo or video",
         type=["jpg", "jpeg", "png", "webp", "mp4", "mov", "avi", "mkv"],
@@ -1346,17 +1594,28 @@ with tab_df:
     if df_file is not None and st.button("🔬 Run Rakshak Deepfake Forensics", type="primary", key="run_df"):
         models = load_deepfake_pipeline()
         ext = os.path.splitext(df_file.name)[1].lower()
+        file_bytes = df_file.read()
 
         if ext in (".mp4", ".mov", ".avi", ".mkv"):
-            with st.spinner("Sampling 16 video frames, extracting faces, auditing audio voiceover & running FFT forensics..."):
-                v_res = analyze_video_forensics(df_file.read(), df_file.name, models)
+            with st.spinner("Sampling 16 video frames, extracting faces, auditing audio voiceover & running ANN fusion..."):
+                v_res = analyze_video_forensics(file_bytes, df_file.name, models)
+                st.session_state["df_result"] = ("video", df_file.name, v_res, None)
+        else:
+            pil_img = Image.open(io.BytesIO(file_bytes))
+            pil_display = ImageOps.exif_transpose(pil_img).convert("RGB")
+            with st.spinner("Analyzing EXIF camera provenance, face crops, 2D FFT & PyTorch ANN..."):
+                score, signals, f_vec = analyze_single_frame_forensics(pil_img, models)
+                st.session_state["df_result"] = ("image", df_file.name, {"score": score, "signals": signals, "features": f_vec}, pil_display)
 
-            score = v_res["final_score"]
-            st.session_state["last_scan"] = f"Video Deepfake Scan ({df_file.name}) -> {score:.1f}% AI"
+    if "df_result" in st.session_state:
+        kind, fname, res_obj, pil_disp = st.session_state["df_result"]
+        if kind == "video":
+            score = res_obj["final_score"]
+            st.session_state["last_scan"] = f"Video Deepfake Scan ({fname}) -> {score:.1f}% AI"
             c1, c2, c3 = st.columns(3)
             c1.metric("AI / Deepfake Probability", f"{score:.2f}%")
-            c2.metric("Peak Signal Score", f"{v_res['peak_score']:.2f}%")
-            c3.metric("Frames Audited", v_res["frames_analyzed"])
+            c2.metric("Peak Signal Score", f"{res_obj['peak_score']:.2f}%")
+            c3.metric("Frames Audited", res_obj["frames_analyzed"])
 
             if score >= 55.0:
                 st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-GENERATED / DEEPFAKE MEDIA DETECTED ({score:.1f}% confidence)</strong></div>", unsafe_allow_html=True)
@@ -1365,26 +1624,23 @@ with tab_df:
             else:
                 st.markdown(f"<div class='verdict-safe'><strong>✅ LIKELY AUTHENTIC CAMERA FOOTAGE ({100 - score:.1f}% real confidence)</strong></div>", unsafe_allow_html=True)
 
-            for sig in v_res["signals"]:
+            for sig in res_obj["signals"]:
                 st.write(f"- {sig}")
 
-            if v_res["previews"]:
-                cols = st.columns(len(v_res["previews"]))
-                for col, (f_idx, f_sc, f_img) in zip(cols, v_res["previews"]):
+            if res_obj["previews"]:
+                cols = st.columns(len(res_obj["previews"]))
+                for col, (f_idx, f_sc, f_img) in zip(cols, res_obj["previews"]):
                     col.image(f_img, caption=f"Frame #{f_idx} ({f_sc:.1f}% AI)", use_container_width=True)
+
+            render_feedback_bar("df_vid", "Deepfake Video", fname, res_obj["features"], "", score)
         else:
-            pil_img = Image.open(df_file)
-            pil_display = ImageOps.exif_transpose(pil_img).convert("RGB")
+            score = res_obj["score"]
+            st.session_state["last_scan"] = f"Image Forensics ({fname}) -> {score:.1f}% AI"
             c_img, c_res = st.columns([1, 1.3])
             with c_img:
-                st.image(pil_display, caption="Uploaded Image", use_container_width=True)
+                st.image(pil_disp, caption="Uploaded Image", use_container_width=True)
             with c_res:
-                with st.spinner("Analyzing EXIF camera provenance, face crops & calibrated 2D FFT spectrum..."):
-                    score, signals = analyze_single_frame_forensics(pil_img, models)
-
-                st.session_state["last_scan"] = f"Image Forensics ({df_file.name}) -> {score:.1f}% AI"
                 st.metric("AI Manipulation / Generation Probability", f"{score:.2f}%")
-
                 if score >= 55.0:
                     st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-GENERATED / MANIPULATED IMAGE ({score:.1f}% AI confidence)</strong></div>", unsafe_allow_html=True)
                 elif score >= 30.0:
@@ -1392,44 +1648,50 @@ with tab_df:
                 else:
                     st.markdown(f"<div class='verdict-safe'><strong>✅ AUTHENTIC PHOTOGRAPH ({100 - score:.2f}% real confidence)</strong></div>", unsafe_allow_html=True)
 
-                for sig in signals:
+                for sig in res_obj["signals"]:
                     st.write(f"- {sig}")
+
+            render_feedback_bar("df_img", "Deepfake Image", fname, res_obj["features"], "", score)
 
 # ------------------------------------------------------------------------------
 # TAB 4: DUAL-MODEL AI VOICE CLONE DETECTOR
 # ------------------------------------------------------------------------------
 with tab_voice:
     st.subheader("🎙️ Dual-Model AI Voice Clone & Synthetic Speech Detector")
-    st.write("Detects AI voice cloners (**ElevenLabs, Kokoro, Speechify, Polly, RVC**) using **Wav2Vec2-XLSR neural detectors**, **silence-trimmed 4.5s speech windows**, and **vocoder spectral forensics**.")
-
     aud_file = st.file_uploader("Upload voice note or call recording", type=["wav", "mp3", "ogg", "flac", "m4a"], key="aud_up")
     if aud_file is not None and st.button("🎧 Detect AI Voice Clone", type="primary", key="run_aud"):
-        st.audio(aud_file)
-        with st.spinner("Decoding audio, trimming silence & running Rakshak Wav2Vec2-XLSR voice clone models..."):
+        aud_bytes = aud_file.read()
+        with st.spinner("Decoding audio, trimming silence & running Rakshak Wav2Vec2-XLSR + ANN..."):
             try:
-                wav_data, sr = load_audio_mono_16k(aud_file.read(), aud_file.name)
+                wav_data, sr = load_audio_mono_16k(aud_bytes, aud_file.name)
                 aud_models = load_audio_models()
                 v_audit = analyze_voice_clone_forensics(wav_data, sr, aud_models)
-
-                score = v_audit["clone_score"]
-                st.session_state["last_scan"] = f"Voice Clone Scan ({aud_file.name}) -> {score:.1f}% AI"
-
-                c1, c2, c3 = st.columns(3)
-                c1.metric("AI Voice Clone Probability", f"{score:.2f}%")
-                c2.metric("Active Speech Analyzed", f"{v_audit['duration_sec']} sec")
-                c3.metric("High-Freq Vocoder Ratio", f"{v_audit['hf_ratio']}")
-
-                if score >= 55.0:
-                    st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-CLONED / SYNTHETIC VOICE DETECTED ({score:.1f}% confidence)</strong></div>", unsafe_allow_html=True)
-                elif score >= 35.0:
-                    st.markdown(f"<div class='verdict-warn'><strong>⚠️ SUSPICIOUS VOCAL ARTIFACTS — VERIFY CALLER IDENTITY ({score:.1f}%)</strong></div>", unsafe_allow_html=True)
-                else:
-                    st.markdown(f"<div class='verdict-safe'><strong>✅ NATURAL HUMAN VOICE ({100 - score:.1f}% human confidence)</strong></div>", unsafe_allow_html=True)
-
-                for sig in v_audit["signals"]:
-                    st.write(f"- {sig}")
+                st.session_state["voice_result"] = (aud_file.name, aud_bytes, v_audit)
             except Exception as e:
-                st.error(f"Could not decode audio file ({e}). Please upload a `.wav`, `.mp3`, `.flac`, or `.ogg` audio file.")
+                st.error(f"Could not decode audio file ({e}).")
+
+    if "voice_result" in st.session_state:
+        aname, abytes, v_audit = st.session_state["voice_result"]
+        st.audio(abytes)
+        score = v_audit["clone_score"]
+        st.session_state["last_scan"] = f"Voice Clone Scan ({aname}) -> {score:.1f}% AI"
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("AI Voice Clone Probability", f"{score:.2f}%")
+        c2.metric("Active Speech Analyzed", f"{v_audit['duration_sec']} sec")
+        c3.metric("High-Freq Vocoder Ratio", f"{v_audit['hf_ratio']}")
+
+        if score >= 55.0:
+            st.markdown(f"<div class='verdict-danger'><strong>🚨 AI-CLONED / SYNTHETIC VOICE DETECTED ({score:.1f}% confidence)</strong></div>", unsafe_allow_html=True)
+        elif score >= 35.0:
+            st.markdown(f"<div class='verdict-warn'><strong>⚠️ SUSPICIOUS VOCAL ARTIFACTS — VERIFY CALLER IDENTITY ({score:.1f}%)</strong></div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='verdict-safe'><strong>✅ NATURAL HUMAN VOICE ({100 - score:.1f}% human confidence)</strong></div>", unsafe_allow_html=True)
+
+        for sig in v_audit["signals"]:
+            st.write(f"- {sig}")
+
+        render_feedback_bar("voice_main", "Voice Clone Detector", aname, v_audit["features"], "", score)
 
 # ------------------------------------------------------------------------------
 # TAB 5: UNIVERSAL VIRUS, APK, PDF, DOCX & ZIP SCANNER
@@ -1439,8 +1701,10 @@ with tab_virus:
     v_file = st.file_uploader("Upload any file (.apk, .exe, .pdf, .docx, .xlsx, .zip, .bat, .ps1)", key="virus_up")
     if v_file is not None and st.button("🛡️ Deep Scan File for Viruses", type="primary", key="run_virus"):
         with st.spinner("Inspecting binary headers, unpacking APK/DOCX/ZIP structures & querying global threat feeds..."):
-            rep = scan_file_for_viruses(v_file.read(), v_file.name, vt_api_key)
+            st.session_state["virus_result"] = scan_file_for_viruses(v_file.read(), v_file.name, vt_api_key)
 
+    if "virus_result" in st.session_state:
+        rep = st.session_state["virus_result"]
         st.session_state["last_scan"] = f"Virus Scan ({rep['filename']}) -> Risk {rep['risk_score']}/100"
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Virus / Malware Risk", f"{rep['risk_score']} / 100")
@@ -1461,14 +1725,7 @@ with tab_virus:
         for t in rep["threats"]:
             st.write(f"- {t}")
 
-        with st.expander("🔐 Cryptographic Hashes (MD5 / SHA-1 / SHA-256)"):
-            st.code(
-                f"File:    {rep['filename']}\n"
-                f"MD5:     {rep['md5']}\n"
-                f"SHA-1:   {rep['sha1']}\n"
-                f"SHA-256: {rep['sha256']}",
-                language="text",
-            )
+        render_feedback_bar("virus_main", "Virus Scanner", rep["filename"], rep["features"], "", rep["risk_score"])
 
 # ------------------------------------------------------------------------------
 # TAB 6: LIVE NETWORK & SOCKET THREAT GUARD (MACOS + LINUX SAFE)
@@ -1561,11 +1818,9 @@ with tab_net:
 # ------------------------------------------------------------------------------
 with tab_ai:
     st.subheader("🤖 Rakshak AI Sahayak — Universal Assistant")
-    st.caption("Ask ANY question — cybercrime emergency help, Indian IT Act laws, coding, science, general knowledge, or scan results.")
-
     if "chat_history" not in st.session_state:
         st.session_state["chat_history"] = [
-            {"role": "assistant", "content": "Namaste! I am **Rakshak AI Sahayak**. Ask me anything — from cybercrime emergency steps (`1930`) to science, history, coding, or general knowledge!"}
+            {"role": "assistant", "content": "Namaste! I am **Rakshak AI Sahayak**. Ask me anything — cybercrime emergency steps (`1930`), science, coding, Indian laws, or general knowledge!"}
         ]
 
     for msg in st.session_state["chat_history"]:
@@ -1591,7 +1846,57 @@ with tab_ai:
         st.session_state["chat_history"].append({"role": "assistant", "content": reply})
 
 # ------------------------------------------------------------------------------
-# TAB 8: INTERACTIVE CITIZEN ACTION GUIDE & COMPLAINT GENERATOR
+# TAB 8: SELF-LEARNING AI BRAIN & NEURAL NETWORK TRAINING STUDIO
+# ------------------------------------------------------------------------------
+with tab_brain:
+    st.subheader("🧠 Rakshak Self-Learning AI Brain (PyTorch ANN + Online ML)")
+    st.write("Monitor how Rakshak's **3-Layer Artificial Neural Network** and **Incremental Text Classifier** learn from citizen feedback, or manually teach it new scam examples.")
+
+    conn = sqlite3.connect(DB_PATH)
+    mem_rows = conn.execute("SELECT id, timestamp, module, summary, base_score, true_label FROM feedback_memory ORDER BY id DESC LIMIT 50").fetchall()
+    total_cnt = conn.execute("SELECT COUNT(*) FROM feedback_memory").fetchone()[0]
+    threat_cnt = conn.execute("SELECT COUNT(*) FROM feedback_memory WHERE true_label = 1").fetchone()[0]
+    safe_cnt = conn.execute("SELECT COUNT(*) FROM feedback_memory WHERE true_label = 0").fetchone()[0]
+    conn.close()
+
+    b1, b2, b3 = st.columns(3)
+    b1.metric("Total Learned Samples", total_cnt)
+    b2.metric("Confirmed Threats Taught", threat_cnt)
+    b3.metric("Verified Safe Samples Taught", safe_cnt)
+
+    st.markdown("#### 🎓 Teach Rakshak a New Scam or Safe Message Directly")
+    teach_col1, teach_col2 = st.columns([2, 1])
+    with teach_col1:
+        new_sample_txt = st.text_input("Enter a new SMS, WhatsApp scam, or UPI pattern to train the model:", placeholder="e.g., Dear user your SBI YONO points worth 9850 expiring today click link...")
+    with teach_col2:
+        new_sample_lbl = st.selectbox("Ground Truth Label", ["🚨 Scam / Threat (1)", "✅ Safe / Legitimate (0)"])
+
+    if st.button("⚡ Train Neural Network & Online ML Now", type="primary", key="btn_train_manual"):
+        if new_sample_txt.strip():
+            lbl_int = 1 if "1" in new_sample_lbl else 0
+            train_on_user_feedback("Manual Training", new_sample_txt[:80], [2.0, float(lbl_int), float(lbl_int), float(lbl_int), 0, 0, 0, 0], new_sample_txt, float(lbl_int * 100), lbl_int)
+            st.success("Training complete! PyTorch ANN weights saved and Incremental ML classifier updated.")
+            st.rerun()
+
+    if mem_rows:
+        st.markdown("#### 📊 Recent Neural Experience Replay Memory")
+        table_data = [
+            {
+                "ID": r[0],
+                "Time": r[1],
+                "Module": r[2],
+                "Sample": r[3],
+                "Initial Score": f"{r[4]:.1f}%",
+                "User Taught Label": "🚨 Threat (1)" if r[5] == 1 else "✅ Safe (0)",
+            }
+            for r in mem_rows
+        ]
+        st.dataframe(table_data, use_container_width=True)
+    else:
+        st.info("No user feedback recorded yet. Run any scan in Tabs 1–5 and click **Mark Safe** or **Confirm Threat** to start training Rakshak's Neural Network!")
+
+# ------------------------------------------------------------------------------
+# TAB 9: INTERACTIVE CITIZEN ACTION GUIDE & COMPLAINT GENERATOR
 # ------------------------------------------------------------------------------
 with tab_guide:
     st.subheader("🇮🇳 Citizen Action Guide & Official Cybercrime Complaint Generator")
@@ -1631,7 +1936,7 @@ with tab_guide:
                 f"I, {victim_name or '[Your Name]'}, wish to report an incident of {incident_type} that occurred on {today_str}.\n"
                 f"- Financial Loss & UTR Reference: {amount_lost or 'N/A'}\n"
                 f"- Suspect Phone / UPI ID / URL: {suspect_info or 'N/A'}\n"
-                f"- Technical Forensics Note: {st.session_state.get('last_scan', 'Verified via Rakshak Cyber Defense Portal')}\n\n"
+                f"- Technical Forensics Note: {st.session_state.get('last_scan', 'Verified via Rakshak Self-Learning Cyber Defense Portal')}\n\n"
                 f"I request you to urgently freeze the beneficiary account/merchant ID under RBI Golden Hour guidelines and register this complaint on cybercrime.gov.in (Helpline 1930).\n\n"
                 f"Sincerely,\n{victim_name or '[Your Name]'}"
             )
